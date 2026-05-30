@@ -1,5 +1,7 @@
 # Dependency directories
 node_modules/
+.claude/
+
 
 # OS files
 .DS_Store
