@@ -11,7 +11,7 @@
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#08090B"
     },
     "ios": {
       "supportsTablet": true,
@@ -19,12 +19,23 @@
         "UIBackgroundModes": [
           "audio"
         ]
+      },
+      "alternateIcons": {
+        "icon-dark": {
+          "image": "./assets/icons/icon-dark.png"
+        },
+        "icon-neon": {
+          "image": "./assets/icons/icon-neon.png"
+        },
+        "icon-gold": {
+          "image": "./assets/icons/icon-gold.png"
+        }
       }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#08090B"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -43,13 +54,22 @@
     },
     "plugins": [
       "expo-router",
+      "./plugins/withAndroidAlternateIcons",
       [
         "expo-audio",
         {
           "recordAudioAndroid": false,
           "microphonePermission": false
         }
-      ]
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Soniq to choose your profile image."
+        }
+      ],
+      "expo-sqlite",
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true

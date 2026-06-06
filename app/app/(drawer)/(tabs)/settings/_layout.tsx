@@ -6,7 +6,10 @@ export default function SettingsLayout() {
       <Stack.Screen name="index" />
       <Stack.Screen name="playback" />
       <Stack.Screen name="audio-quality" />
+      <Stack.Screen name="others" />
+      <Stack.Screen name="backup" />
       <Stack.Screen name="developer" />
+      <Stack.Screen name="app-icon" />
     </Stack>
   );
 }

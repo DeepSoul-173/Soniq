@@ -9,6 +9,9 @@ export interface AppSettings {
   accentColor: string;
   preferredListeningMoods: string[];
   useDenseLists: boolean;
+  musicLanguage: string;
+  localChartsLocation: string;
+  appLanguage: string;
 
   // 1. Playback
   autoplay: boolean;
@@ -24,10 +27,14 @@ export interface AppSettings {
   resumeOnReopen: boolean;
   seekStep: number;
   preferredStartVolume: number;
+  replayOnSkipPrevious: boolean;
+  enforceRepeating: boolean;
+  loadLastSessionOnStart: boolean;
 
   // 2. Audio Quality
   wifiStreamingQuality: 'low' | 'normal' | 'high' | 'very_high';
   cellularStreamingQuality: 'low' | 'normal' | 'high' | 'very_high';
+  proxyStreamingQuality: 'low' | 'normal' | 'high' | 'very_high';
   downloadQuality: 'normal' | 'high' | 'very_high';
   autoAdjustQuality: boolean;
   highQualityOnlyOnWifi: boolean;
@@ -42,6 +49,10 @@ export interface AppSettings {
   offlineMode: boolean;
   smartDownload: boolean;
   autoCleanCache: boolean;
+  cacheSongs: boolean;
+  streamDownloadedSongsFirst: boolean;
+  useProxy: boolean;
+  proxyUrl: string;
 
   // 4. Notifications
   pushNotifications: boolean;
@@ -63,6 +74,8 @@ export interface AppSettings {
 
   // 6. Library & Personalization
   favoriteGenres: string[];
+  preferredLanguages: string[];   // e.g. ["Hindi", "Tamil", "English"]
+  favoriteArtists: string[];      // e.g. ["Arijit Singh", "The Weeknd"]
   recommendationSensitivity: number; // 0.0 to 1.0
   diversityVsFamiliarity: number; // 0.0 to 1.0 (1.0 = highly diverse)
   discoveryMode: boolean;
@@ -85,6 +98,15 @@ export interface AppSettings {
   showRecentlyPlayed: boolean;
   privateSession: boolean;
   localOnlyMode: boolean;
+  includeFolders: string[];
+  excludeFolders: string[];
+  minimumLocalAudioLength: number;
+  liveSearch: boolean;
+  searchLocalLyrics: boolean;
+  supportEqualizer: boolean;
+  stopMusicOnAppClose: boolean;
+  autoBackup: boolean;
+  autoBackupLocation: string;
 
   // 10. Developer
   debugLogs: boolean;
@@ -97,6 +119,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   accentColor: '#FF2A70',
   preferredListeningMoods: ['Focus', 'Electronic', 'Ambient'],
   useDenseLists: false,
+  musicLanguage: 'Auto',
+  localChartsLocation: 'India',
+  appLanguage: 'System',
 
   autoplay: true,
   playInBackground: true,
@@ -111,9 +136,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   resumeOnReopen: true,
   seekStep: 10,
   preferredStartVolume: 100,
+  replayOnSkipPrevious: true,
+  enforceRepeating: false,
+  loadLastSessionOnStart: true,
 
   wifiStreamingQuality: 'high',
   cellularStreamingQuality: 'normal',
+  proxyStreamingQuality: 'normal',
   downloadQuality: 'high',
   autoAdjustQuality: true,
   highQualityOnlyOnWifi: false,
@@ -127,6 +156,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   offlineMode: false,
   smartDownload: false,
   autoCleanCache: true,
+  cacheSongs: true,
+  streamDownloadedSongsFirst: true,
+  useProxy: true,
+  proxyUrl: '',
 
   pushNotifications: true,
   notifyRecommendations: true,
@@ -145,6 +178,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   showVisualizer: false,
 
   favoriteGenres: [],
+  preferredLanguages: [],
+  favoriteArtists: [],
   recommendationSensitivity: 0.5,
   diversityVsFamiliarity: 0.5,
   discoveryMode: false,
@@ -164,6 +199,15 @@ const DEFAULT_SETTINGS: AppSettings = {
   showRecentlyPlayed: true,
   privateSession: false,
   localOnlyMode: false,
+  includeFolders: [],
+  excludeFolders: [],
+  minimumLocalAudioLength: 30,
+  liveSearch: true,
+  searchLocalLyrics: true,
+  supportEqualizer: false,
+  stopMusicOnAppClose: false,
+  autoBackup: false,
+  autoBackupLocation: '',
 
   debugLogs: false,
   mockMode: false,
@@ -173,6 +217,8 @@ interface SettingsStore {
   settings: AppSettings;
   updateSetting: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   toggleListeningMood: (mood: string) => void;
+  toggleLanguage: (language: string) => void;
+  toggleFavoriteArtist: (artist: string) => void;
   resetSettings: () => void;
 }
 
@@ -196,6 +242,31 @@ export const useSettingsStore = create<SettingsStore>()(
               preferredListeningMoods: exists
                 ? state.settings.preferredListeningMoods.filter((item) => item !== mood)
                 : [...state.settings.preferredListeningMoods, mood],
+            },
+          };
+        }),
+      toggleLanguage: (language) =>
+        set((state) => {
+          const exists = (state.settings.preferredLanguages ?? []).includes(language);
+          return {
+            settings: {
+              ...state.settings,
+              preferredLanguages: exists
+                ? (state.settings.preferredLanguages ?? []).filter((l) => l !== language)
+                : [...(state.settings.preferredLanguages ?? []), language],
+            },
+          };
+        }),
+      toggleFavoriteArtist: (artist) =>
+        set((state) => {
+          const current = state.settings.favoriteArtists ?? [];
+          const exists = current.includes(artist);
+          return {
+            settings: {
+              ...state.settings,
+              favoriteArtists: exists
+                ? current.filter((a) => a !== artist)
+                : [...current, artist],
             },
           };
         }),

@@ -32,16 +32,34 @@ export default function SettingsIndexScreen() {
       onPress: () => router.push('/profile' as any),
     },
     {
-      title: 'Playback',
-      description: 'Autoplay, gapless behavior, volume, and explicit content.',
+      title: 'Music & Playback',
+      description: 'Language, region, quality, session, autoplay, and caching.',
       icon: 'play-circle-outline',
       onPress: () => router.push('/settings/playback' as any),
     },
     {
-      title: 'Audio quality',
-      description: 'Streaming quality and network-aware playback.',
+      title: 'Audio Quality',
+      description: 'Streaming tiers, download quality, and data-saving options.',
       icon: 'musical-note-outline',
       onPress: () => router.push('/settings/audio-quality' as any),
+    },
+    {
+      title: 'Others',
+      description: 'App language, local files, search, equalizer, and proxy.',
+      icon: 'options-outline',
+      onPress: () => router.push('/settings/others' as any),
+    },
+    {
+      title: 'Backup & Restore',
+      description: 'Save and restore your settings snapshot locally.',
+      icon: 'cloud-outline',
+      onPress: () => router.push('/settings/backup' as any),
+    },
+    {
+      title: 'App Icon',
+      description: 'Personalise the icon on your home screen. Earn Gold after 100 plays.',
+      icon: 'apps-outline',
+      onPress: () => router.push('/settings/app-icon' as any),
     },
     {
       title: 'Developer options',

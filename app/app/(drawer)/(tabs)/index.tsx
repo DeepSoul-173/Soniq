@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   ScrollView,
   StyleSheet,
@@ -15,11 +16,15 @@ import { DrawerActions } from '@react-navigation/native';
 import { useNavigation, useRouter } from 'expo-router';
 import { useSettingsStore } from '@/src/store/settingsStore';
 import { usePlayerStore } from '@/src/store/playerStore';
-import { useLibraryStore } from '@/src/store/libraryStore';
-import { TrackItem } from '@/src/components/ui/TrackItem';
 import { Track } from '@/src/models/types';
-import { SearchService } from '@/src/services/SearchService';
 import { getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import {
+  AlbumRecommendation,
+  ArtistRecommendation,
+  HomeRecommendationSection,
+  RecommendationEngine,
+} from '@/src/services/recommendations/RecommendationEngine';
+import { useResponsiveLayout } from '@/src/hooks/useResponsiveLayout';
 
 const safeJoin = (values: unknown, separator = ', ') =>
   Array.isArray(values)
@@ -30,22 +35,22 @@ export default function HomeScreen() {
   const navigation = useNavigation();
   const router = useRouter();
   const { settings } = useSettingsStore();
-  const { recentlyPlayed, likedTracks } = useLibraryStore();
   const { setQueue, addToQueue } = usePlayerStore();
   const theme = getTheme(settings);
   const insets = useSafeAreaInsets();
-  const [tracks, setTracks] = useState<Track[]>([]);
+  const { railCardWidth } = useResponsiveLayout();
+  const [sections, setSections] = useState<HomeRecommendationSection[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-
     setLoading(true);
-    SearchService.searchAll('popular songs')
-      .then((results) => {
-        if (!cancelled) setTracks(results);
+
+    RecommendationEngine.getHomeRecommendations()
+      .then((nextSections) => {
+        if (!cancelled) setSections(nextSections);
       })
-      .catch((error) => console.error('Home Piped load failed', error))
+      .catch((error) => console.error('Home recommendations failed', error))
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
@@ -53,7 +58,7 @@ export default function HomeScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [settings.musicLanguage, settings.localChartsLocation, settings.preferredListeningMoods, settings.favoriteGenres, settings.favoriteArtists, settings.preferredLanguages]);
 
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
@@ -62,62 +67,95 @@ export default function HomeScreen() {
     return 'Good evening';
   }, []);
 
-  const replacePreparedTrack = (track: Track) => {
-    setTracks((current) => current.map((item) => item.id === track.id ? track : item));
+  const playTracks = (tracks: Track[] = [], startIndex = 0) => {
+    if (tracks.length === 0) return;
+    setQueue(tracks, startIndex);
   };
 
-  const prepareTrack = async (track: Track) => {
-    if (track.streamUrl) return track;
-    const playableTrack = await SearchService.prepareTrackForPlayback(track);
-    replacePreparedTrack(playableTrack);
-    return playableTrack;
-  };
-
-  const playCollection = async (collection: Track[], startIndex = 0) => {
-    const selectedTrack = collection[startIndex];
-    if (!selectedTrack) return;
-
-    try {
-      const playableTrack = await prepareTrack(selectedTrack);
-      const queue = collection.map((track, index) => index === startIndex ? playableTrack : track);
-      setQueue(queue, startIndex);
-    } catch (error) {
-      console.error('Home Piped stream lookup failed', error);
-    }
-  };
-
-  const queueTrack = async (track: Track) => {
-    try {
-      addToQueue(await prepareTrack(track));
-    } catch (error) {
-      console.error('Home Piped stream lookup failed', error);
-    }
-  };
-
-  const renderTrackList = (items: Track[]) => (
-    <View style={[styles.listSurface, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-      {items.map((track, index) => (
-        <TrackItem
-          key={track.id}
-          track={track}
-          onPress={() => playCollection(items, index)}
-          onAddToQueue={() => queueTrack(track)}
-        />
-      ))}
-    </View>
+  const renderTrackCard = (track: Track, tracks: Track[], index: number) => (
+    <TouchableOpacity
+      key={`${track.id}-${index}`}
+      style={[styles.songCard, { width: railCardWidth, backgroundColor: theme.surface, borderColor: theme.border }]}
+      onPress={() => playTracks(tracks, index)}
+    >
+      <Image source={{ uri: track.artwork || track.artworkUrl || 'https://via.placeholder.com/180' }} style={styles.cardArt} />
+      <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1} ellipsizeMode="tail">
+        {track.title}
+      </Text>
+      <Text style={[styles.cardSubtitle, { color: theme.secondaryText }]} numberOfLines={1} ellipsizeMode="tail">
+        {track.artist || track.artistName}
+      </Text>
+      <TouchableOpacity style={styles.cardIcon} onPress={() => addToQueue(track)}>
+        <Ionicons name="add-circle-outline" size={22} color={theme.accent} />
+      </TouchableOpacity>
+    </TouchableOpacity>
   );
 
-  const topTracks = tracks.slice(0, 6);
-  const libraryTracks = recentlyPlayed.length ? recentlyPlayed : likedTracks;
+  const renderArtistCard = (artist: ArtistRecommendation) => (
+    <TouchableOpacity
+      key={artist.id}
+      style={[styles.artistCard, { width: railCardWidth, backgroundColor: theme.surface, borderColor: theme.border }]}
+    >
+      <Image source={{ uri: artist.image || 'https://via.placeholder.com/180' }} style={styles.artistArt} />
+      <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1} ellipsizeMode="tail">
+        {artist.name}
+      </Text>
+      <Text style={[styles.cardSubtitle, { color: theme.secondaryText }]} numberOfLines={2} ellipsizeMode="tail">
+        {artist.reason}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderAlbumCard = (album: AlbumRecommendation) => (
+    <TouchableOpacity
+      key={album.id}
+      style={[styles.albumCard, { width: railCardWidth, backgroundColor: theme.surface, borderColor: theme.border }]}
+      onPress={() => playTracks(album.tracks)}
+    >
+      <Image source={{ uri: album.artwork || 'https://via.placeholder.com/180' }} style={styles.cardArt} />
+      <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1} ellipsizeMode="tail">
+        {album.title}
+      </Text>
+      <Text style={[styles.cardSubtitle, { color: theme.secondaryText }]} numberOfLines={1} ellipsizeMode="tail">
+        {album.artist}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderSection = (section: HomeRecommendationSection) => {
+    const tracks = section.tracks || [];
+    const hasItems = tracks.length || section.artists?.length || section.albums?.length;
+    if (!hasItems) return null;
+
+    return (
+      <View key={section.id} style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <View style={styles.sectionCopy}>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>{section.title}</Text>
+            <Text style={[styles.sectionSubtitle, { color: theme.secondaryText }]} numberOfLines={1}>{section.subtitle}</Text>
+          </View>
+          {tracks.length > 0 && (
+            <TouchableOpacity onPress={() => playTracks(tracks)}>
+              <Ionicons name="play-circle" size={30} color={theme.accent} />
+            </TouchableOpacity>
+          )}
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
+          {section.kind === 'artists'
+            ? section.artists?.map(renderArtistCard)
+            : section.kind === 'albums'
+              ? section.albums?.map(renderAlbumCard)
+              : tracks.map((track, index) => renderTrackCard(track, tracks, index))}
+        </ScrollView>
+      </View>
+    );
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <LinearGradient colors={theme.gradient} style={StyleSheet.absoluteFill} />
 
-      <SafeAreaView
-        edges={['top']}
-        style={[styles.stickyHeader, { backgroundColor: theme.overlay, borderBottomColor: theme.border }]}
-      >
+      <SafeAreaView edges={['top']} style={[styles.stickyHeader, { backgroundColor: theme.overlay, borderBottomColor: theme.border }]}>
         <View style={styles.headerTop}>
           <TouchableOpacity style={styles.roundButton} onPress={() => navigation.dispatch(DrawerActions.openDrawer())}>
             <Ionicons name="menu" size={24} color={theme.text} />
@@ -125,24 +163,23 @@ export default function HomeScreen() {
           <View style={styles.greetingCopy}>
             <Text style={[styles.greeting, { color: theme.text }]}>{greeting}</Text>
             <Text style={[styles.subGreeting, { color: theme.secondaryText }]} numberOfLines={1}>
-              {safeJoin(settings?.preferredListeningMoods, ' / ') || 'Real songs from Piped'}
+              {safeJoin(settings.preferredListeningMoods, ' / ') || 'Made from your local profile'}
             </Text>
           </View>
           <TouchableOpacity onPress={() => router.push('/profile' as any)}>
             <Image source={{ uri: settings.profileImageUri }} style={styles.avatar} />
+            <View style={[styles.editDot, { backgroundColor: theme.accent }]}>
+              <Ionicons name="pencil" size={10} color="#08090B" />
+            </View>
           </TouchableOpacity>
         </View>
 
-        <TouchableOpacity
-          activeOpacity={0.85}
-          style={[styles.searchBar, { backgroundColor: theme.elevated }]}
-          onPress={() => router.push('/(drawer)/(tabs)/search')}
-        >
+        <TouchableOpacity activeOpacity={0.85} style={[styles.searchBar, { backgroundColor: theme.elevated }]} onPress={() => router.push('/(drawer)/(tabs)/search')}>
           <Ionicons name="search" size={20} color={theme.secondaryText} />
           <TextInput
             editable={false}
             pointerEvents="none"
-            placeholder="Search songs and artists on Piped"
+            placeholder="Search songs, singers, moods"
             placeholderTextColor={theme.secondaryText}
             style={[styles.searchInput, { color: theme.text }]}
           />
@@ -159,64 +196,20 @@ export default function HomeScreen() {
           },
         ]}
       >
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>Piped Picks</Text>
-            <TouchableOpacity onPress={() => playCollection(topTracks)}>
-              <Text style={[styles.textButton, { color: theme.accent }]}>Play all</Text>
-            </TouchableOpacity>
-          </View>
-
-          {topTracks.length ? (
-            <View style={styles.quickGrid}>
-              {topTracks.slice(0, 4).map((track, index) => (
-                <TouchableOpacity
-                  key={track.id}
-                  style={[styles.quickTile, { backgroundColor: theme.surface, borderColor: theme.border }]}
-                  onPress={() => playCollection(topTracks, index)}
-                >
-                  <Image source={{ uri: track.artworkUrl || 'https://via.placeholder.com/150' }} style={styles.quickArt} />
-                  <Text style={[styles.quickTitle, { color: theme.text }]} numberOfLines={2}>
-                    {track.title}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          ) : (
-            <View style={[styles.emptyPanel, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-              <Ionicons name={loading ? 'sync' : 'search'} size={28} color={theme.accent} />
-              <Text style={[styles.emptyTitle, { color: theme.text }]}>
-                {loading ? 'Loading Piped songs' : 'Search for any song'}
-              </Text>
-              <Text style={[styles.emptyText, { color: theme.secondaryText }]}>
-                The home feed no longer uses bundled demo tracks.
-              </Text>
-            </View>
-          )}
-        </View>
-
-        {topTracks.length > 0 && (
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>Real Results</Text>
-            {renderTrackList(topTracks)}
+        {loading && (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color={theme.accent} />
+            <Text style={[styles.loadingText, { color: theme.secondaryText }]}>Building local-first recommendations</Text>
           </View>
         )}
-
-        {libraryTracks.length > 0 && (
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>From Your Library</Text>
-            {renderTrackList(libraryTracks.slice(0, 8))}
-          </View>
-        )}
+        {sections.map(renderSection)}
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   stickyHeader: {
     borderBottomWidth: 1,
     left: 0,
@@ -233,29 +226,20 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     paddingTop: 8,
   },
-  roundButton: {
+  roundButton: { alignItems: 'center', height: 42, justifyContent: 'center', width: 42 },
+  greetingCopy: { flex: 1, paddingHorizontal: 12 },
+  greeting: { fontSize: 25, fontWeight: '900' },
+  subGreeting: { fontSize: 12, fontWeight: '600', marginTop: 2 },
+  avatar: { borderRadius: 20, height: 40, width: 40 },
+  editDot: {
     alignItems: 'center',
-    height: 42,
+    borderRadius: 9,
+    bottom: -1,
+    height: 18,
     justifyContent: 'center',
-    width: 42,
-  },
-  greetingCopy: {
-    flex: 1,
-    paddingHorizontal: 12,
-  },
-  greeting: {
-    fontSize: 25,
-    fontWeight: '900',
-  },
-  subGreeting: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  avatar: {
-    borderRadius: 20,
-    height: 40,
-    width: 40,
+    position: 'absolute',
+    right: -1,
+    width: 18,
   },
   searchBar: {
     alignItems: 'center',
@@ -264,82 +248,52 @@ const styles = StyleSheet.create({
     height: 46,
     paddingHorizontal: 14,
   },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    marginLeft: 10,
+  searchInput: { flex: 1, fontSize: 14, marginLeft: 10 },
+  scrollContent: { flexGrow: 1 },
+  loadingRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
   },
-  scrollContent: {
-    flexGrow: 1,
-  },
-  section: {
-    marginBottom: 30,
-  },
+  loadingText: { fontSize: 12, fontWeight: '700', marginLeft: 10 },
+  section: { marginBottom: 30 },
   sectionHeader: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 14,
     paddingHorizontal: 20,
+    paddingBottom: 12,
   },
-  sectionTitle: {
-    fontSize: 21,
-    fontWeight: '900',
-    marginBottom: 14,
-    paddingHorizontal: 20,
+  sectionCopy: { flex: 1, paddingRight: 12 },
+  sectionTitle: { fontSize: 21, fontWeight: '900' },
+  sectionSubtitle: { fontSize: 12, fontWeight: '700', marginTop: 3 },
+  rail: { paddingHorizontal: 16 },
+  // Width is injected dynamically via railCardWidth — do NOT set width here
+  songCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    marginRight: 10,
+    padding: 10,
   },
-  textButton: {
-    fontSize: 13,
-    fontWeight: '800',
+  // Shared square art — fills the card minus padding
+  cardArt: { aspectRatio: 1, backgroundColor: '#333', borderRadius: 7, width: '100%' },
+  albumCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    marginRight: 10,
+    padding: 10,
   },
-  quickGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 14,
-  },
-  quickTile: {
+  artistCard: {
     alignItems: 'center',
     borderRadius: 8,
     borderWidth: 1,
-    flexDirection: 'row',
-    height: 64,
-    margin: 6,
-    overflow: 'hidden',
-    width: '46.8%',
+    marginRight: 10,
+    padding: 12,
   },
-  quickArt: {
-    backgroundColor: '#333',
-    height: 64,
-    width: 64,
-  },
-  quickTitle: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '800',
-    paddingHorizontal: 10,
-  },
-  listSurface: {
-    borderRadius: 8,
-    borderWidth: 1,
-    marginHorizontal: 12,
-    overflow: 'hidden',
-  },
-  emptyPanel: {
-    alignItems: 'center',
-    borderRadius: 8,
-    borderWidth: 1,
-    marginHorizontal: 20,
-    padding: 22,
-  },
-  emptyTitle: {
-    fontSize: 17,
-    fontWeight: '900',
-    marginTop: 10,
-  },
-  emptyText: {
-    fontSize: 13,
-    lineHeight: 19,
-    marginTop: 6,
-    textAlign: 'center',
-  },
+  // Artist photo: 60% of card width (set inline for responsiveness)
+  artistArt: { aspectRatio: 1, backgroundColor: '#333', borderRadius: 999, width: '60%' },
+  cardTitle: { fontSize: 14, fontWeight: '900', marginTop: 10 },
+  cardSubtitle: { fontSize: 12, fontWeight: '600', lineHeight: 16, marginTop: 3 },
+  cardIcon: { alignSelf: 'flex-end', marginTop: 8 },
 });

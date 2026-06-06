@@ -2,6 +2,15 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { Track } from '@/src/models/types';
 import { mmkvZustandStorage } from '@/src/store/mmkvStorage';
+import { PlaybackResolverState } from '@/src/services/playback/SourceResolver';
+
+export type SleepTimerMode = 'end_of_track' | 'timed';
+
+export interface SleepTimer {
+  mode: SleepTimerMode;
+  endTime: number | null; // unix ms, only set when mode === 'timed'
+  label: string;
+}
 
 interface PlayerStore {
   queue: Track[];
@@ -12,7 +21,12 @@ interface PlayerStore {
   duration: number;
   activeEngine: 'native' | null;
   seekRequest: { position: number; requestId: number } | null;
-  
+  playbackResolverState: PlaybackResolverState | 'idle';
+  playbackStatusMessage: string;
+  playbackSourceLabel: 'Legal' | 'Piped' | 'Proxy' | 'Downloaded' | null;
+  sleepTimer: SleepTimer | null;
+  isPipMode: boolean;
+
   // Actions
   setQueue: (tracks: Track[], startIndex?: number) => void;
   addToQueue: (track: Track) => void;
@@ -30,6 +44,13 @@ interface PlayerStore {
   requestSeek: (position: number) => void;
   setIsBuffering: (isBuffering: boolean) => void;
   setActiveEngine: (engine: 'native' | null) => void;
+  setPlaybackResolverState: (
+    state: PlaybackResolverState | 'idle',
+    message?: string,
+    sourceLabel?: PlayerStore['playbackSourceLabel']
+  ) => void;
+  setSleepTimer: (timer: SleepTimer | null) => void;
+  setPipMode: (pip: boolean) => void;
 }
 
 export const usePlayerStore = create<PlayerStore>()(
@@ -43,6 +64,11 @@ export const usePlayerStore = create<PlayerStore>()(
       duration: 0,
       activeEngine: null,
       seekRequest: null,
+      playbackResolverState: 'idle',
+      playbackStatusMessage: '',
+      playbackSourceLabel: null,
+      sleepTimer: null,
+      isPipMode: false,
 
       setQueue: (tracks, startIndex = 0) => {
         const currentIndex = tracks.length ? Math.max(0, Math.min(startIndex, tracks.length - 1)) : -1;
@@ -154,6 +180,16 @@ export const usePlayerStore = create<PlayerStore>()(
       setIsBuffering: (isBuffering) => set({ isBuffering }),
       
       setActiveEngine: (engine) => set({ activeEngine: engine }),
+
+      setPlaybackResolverState: (playbackResolverState, playbackStatusMessage = '', playbackSourceLabel) =>
+        set((state) => ({
+          playbackResolverState,
+          playbackStatusMessage,
+          playbackSourceLabel: playbackSourceLabel === undefined ? state.playbackSourceLabel : playbackSourceLabel,
+        })),
+
+      setSleepTimer: (sleepTimer) => set({ sleepTimer }),
+      setPipMode: (isPipMode) => set({ isPipMode }),
     }),
     {
       name: 'soniq-player-storage',

@@ -1,10 +1,11 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Track } from '@/src/models/types';
 import { usePlayerStore } from '@/src/store/playerStore';
 import { useSettingsStore } from '@/src/store/settingsStore';
 import { getTheme } from '@/src/theme/musicTheme';
+import { AnimatedDiskArt } from '@/src/components/ui/AnimatedDiskArt';
 
 interface Props {
   track: Track;
@@ -14,9 +15,12 @@ interface Props {
 }
 
 const SOURCE_LABELS: Record<Track['sourceType'], string> = {
+  legal: 'Legal',
   piped: 'Piped',
+  proxy: 'Proxy',
   jamendo: 'Jamendo',
   internet_archive: 'Archive',
+  downloaded: 'Downloaded',
 };
 
 export function TrackItem({ track, onPress, onAddToQueue, showArtwork = true }: Props) {
@@ -43,17 +47,27 @@ export function TrackItem({ track, onPress, onAddToQueue, showArtwork = true }: 
       onPress={handlePress}
     >
       {showArtwork && (
-        <Image
-          source={{ uri: track.artworkUrl || 'https://via.placeholder.com/150' }}
-          style={[styles.artwork, settings.useDenseLists && styles.denseArtwork]}
+        <AnimatedDiskArt
+          size={settings.useDenseLists ? 42 : 50}
+          isPlaying={isCurrentlyPlaying && isPlaying}
+          artworkUri={track.artwork || track.artworkUrl || null}
+          borderRadius={6}
         />
       )}
       <View style={[styles.textContainer, !showArtwork && styles.noArtworkText]}>
-        <Text style={[styles.title, { color: isCurrentlyPlaying ? theme.accent : theme.text }]} numberOfLines={1}>
+        <Text
+          style={[styles.title, { color: isCurrentlyPlaying ? theme.accent : theme.text }]}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
           {track.title}
         </Text>
-        <Text style={[styles.artist, { color: theme.secondaryText }]} numberOfLines={1}>
-          {SOURCE_LABELS[track.sourceType]} - {track.artistName}
+        <Text
+          style={[styles.artist, { color: theme.secondaryText }]}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
+          {track.sourceLabel || SOURCE_LABELS[track.sourceType]} · {track.artist || track.artistName}
         </Text>
       </View>
       <TouchableOpacity

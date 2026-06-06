@@ -1,19 +1,33 @@
-export type PlaybackSourceType = 'piped' | 'jamendo' | 'internet_archive';
+export type PlaybackSourceType = 'legal' | 'piped' | 'proxy' | 'jamendo' | 'internet_archive' | 'downloaded';
 
 export interface Track {
   id: string;
   title: string;
+  artist: string;
+  album?: string;
+  artwork?: string;
+  duration: number; // in seconds
+  streamUrl?: string;
+  sourceType: PlaybackSourceType;
+  lyricsAvailable: boolean;
+  downloadAvailable: boolean;
+  genres: string[];
+  moodTags: string[];
+
+  // Backward-compatible aliases used by older UI components during migration.
   artistId: string;
   artistName: string;
   albumId?: string;
   albumName?: string;
   artworkUrl?: string;
-  duration: number; // in seconds
-  sourceType: PlaybackSourceType;
-  streamUrl?: string; // Used for direct native playback sources
+
   pipedVideoId?: string; // Used to resolve Piped streams just before playback
   tags?: string[];
   genre?: string;
+  sourceLabel?: 'Legal' | 'Piped' | 'Proxy' | 'Downloaded';
+  localUri?: string;
+  sourceValidatedAt?: number;
+  queueReason?: string; // e.g. "Because you like Radiohead" — shown in the queue UI
 }
 
 export interface Artist {
@@ -41,4 +55,6 @@ export interface Playlist {
   artworkUrl?: string;
   creatorName?: string;
   tracks: Track[];
+  createdAt?: number;
+  sourceType?: 'local' | 'youtube' | 'spotify';
 }

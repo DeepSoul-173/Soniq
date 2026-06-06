@@ -7,7 +7,23 @@ export const ACCENT_OPTIONS = [
   { label: 'Skyline', value: '#58A6FF' },
 ] as const;
 
-export const GENRE_OPTIONS = ['Electronic', 'Indie', 'Focus', 'Rock', 'Ambient', 'Acoustic'];
+export const GENRE_OPTIONS = [
+  'Pop', 'Hip-Hop', 'Bollywood', 'Indie', 'Lo-Fi', 'Devotional',
+  'Electronic', 'Acoustic', 'Rock', 'Focus', 'Ambient', 'Classical',
+  'Jazz', 'R&B', 'Metal', 'Chill',
+];
+
+export const LANGUAGE_OPTIONS = [
+  'English', 'Hindi', 'Punjabi', 'Tamil', 'Telugu',
+  'Malayalam', 'Kannada', 'Bengali', 'Marathi',
+];
+
+export const SUGGESTED_ARTISTS = [
+  'The Weeknd', 'Taylor Swift', 'Drake', 'Billie Eilish', 'Travis Scott',
+  'Arijit Singh', 'Anirudh Ravichander', 'Shreya Ghoshal', 'Sid Sriram',
+  'A.R. Rahman', 'Dua Lipa', 'Post Malone', 'Kendrick Lamar', 'Coldplay',
+  'Radiohead', 'Pritam', 'Atif Aslam', 'K.K.', 'Shankar-Ehsaan-Loy',
+];
 
 export const MINI_PLAYER_HEIGHT = 72;
 export const MINI_PLAYER_TAB_GAP = 8;

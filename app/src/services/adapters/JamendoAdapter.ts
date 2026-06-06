@@ -1,5 +1,6 @@
 import { BaseAdapter } from '@/src/services/adapters/BaseAdapter';
 import { Track, Artist, Album, Playlist } from '@/src/models/types';
+import { normalizeTrack } from '@/src/services/search/trackNormalizer';
 
 // Jamendo requires a client ID.
 const JAMENDO_CLIENT_ID = process.env.EXPO_PUBLIC_JAMENDO_CLIENT_ID || 'b6747d04'; // Public test ID if available, else needs env
@@ -14,18 +15,21 @@ export class JamendoAdapter extends BaseAdapter {
       
       if (!data.results) return { tracks: [], artists: [], albums: [] };
 
-      const tracks: Track[] = data.results.map((item: any) => ({
+      const tracks: Track[] = data.results.map((item: any) => normalizeTrack({
         id: `jam_${item.id}`,
         title: item.name,
+        artist: item.artist_name,
         artistId: `jam_art_${item.artist_id}`,
-        artistName: item.artist_name,
-        albumName: item.album_name,
-        artworkUrl: item.image,
+        album: item.album_name,
+        artwork: item.image,
         duration: parseInt(item.duration, 10),
-        sourceType: 'jamendo',
+        sourceType: 'legal',
         streamUrl: item.audio,
-        tags: item.tags || [],
-        genre: 'Unknown', // Jamendo uses tags rather than a single genre
+        lyricsAvailable: false,
+        downloadAvailable: Boolean(item.audiodownload || item.audio),
+        genres: item.musicinfo?.tags?.genres || item.tags || [],
+        moodTags: item.musicinfo?.tags?.vartags || [],
+        sourceLabel: 'Legal',
       }));
 
       return { tracks, artists: [], albums: [] };
@@ -42,17 +46,21 @@ export class JamendoAdapter extends BaseAdapter {
       
       if (!data.results) return [];
 
-      return data.results.map((item: any) => ({
+      return data.results.map((item: any) => normalizeTrack({
         id: `jam_${item.id}`,
         title: item.name,
+        artist: item.artist_name,
         artistId: `jam_art_${item.artist_id}`,
-        artistName: item.artist_name,
-        albumName: item.album_name,
-        artworkUrl: item.image,
+        album: item.album_name,
+        artwork: item.image,
         duration: parseInt(item.duration, 10),
-        sourceType: 'jamendo',
+        sourceType: 'legal',
         streamUrl: item.audio,
-        tags: item.tags || [],
+        lyricsAvailable: false,
+        downloadAvailable: Boolean(item.audiodownload || item.audio),
+        genres: item.musicinfo?.tags?.genres || item.tags || [],
+        moodTags: item.musicinfo?.tags?.vartags || [],
+        sourceLabel: 'Legal',
       }));
     } catch (e) {
       console.error('Jamendo trending failed', e);
@@ -66,17 +74,21 @@ export class JamendoAdapter extends BaseAdapter {
     const data = await response.json();
     if (!data.results || data.results.length === 0) throw new Error('Jamendo track not found');
     const item = data.results[0];
-    return {
+    return normalizeTrack({
       id: trackId,
       title: item.name,
+      artist: item.artist_name,
       artistId: `jam_art_${item.artist_id}`,
-      artistName: item.artist_name,
-      artworkUrl: item.image,
+      artwork: item.image,
       duration: parseInt(item.duration, 10),
-      sourceType: 'jamendo',
+      sourceType: 'legal',
       streamUrl: item.audio,
-      tags: item.tags || [],
-    };
+      lyricsAvailable: false,
+      downloadAvailable: Boolean(item.audiodownload || item.audio),
+      genres: item.musicinfo?.tags?.genres || item.tags || [],
+      moodTags: item.musicinfo?.tags?.vartags || [],
+      sourceLabel: 'Legal',
+    });
   }
 
   async getPlaylist(playlistId: string): Promise<Playlist> {

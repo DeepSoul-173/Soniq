@@ -1,5 +1,6 @@
 import { BaseAdapter } from '@/src/services/adapters/BaseAdapter';
 import { Track, Artist, Album, Playlist } from '@/src/models/types';
+import { normalizeTrack } from '@/src/services/search/trackNormalizer';
 
 export class IAAdapter extends BaseAdapter {
   readonly sourceName = 'internet_archive';
@@ -13,20 +14,23 @@ export class IAAdapter extends BaseAdapter {
       
       if (!data.response || !data.response.docs) return { tracks: [], artists: [], albums: [] };
 
-      const tracks: Track[] = data.response.docs.map((doc: any) => ({
+      const tracks: Track[] = data.response.docs.map((doc: any) => normalizeTrack({
         id: `ia_${doc.identifier}`,
         title: doc.title,
+        artist: Array.isArray(doc.creator) ? doc.creator[0] : (doc.creator || 'Unknown Creator'),
         artistId: `ia_creator_${doc.creator || 'unknown'}`,
-        artistName: Array.isArray(doc.creator) ? doc.creator[0] : (doc.creator || 'Unknown Creator'),
-        artworkUrl: `https://archive.org/services/img/${doc.identifier}`,
+        artwork: `https://archive.org/services/img/${doc.identifier}`,
         // IA returns length as a string like "03:45" or a number of seconds
         duration: this.parseIADuration(doc.length),
-        sourceType: 'internet_archive',
+        sourceType: 'legal',
         // Direct stream URL requires finding the specific MP3 file inside the item, 
         // we'll approximate the download URL for now and refine in getTrackDetails
         streamUrl: `https://archive.org/download/${doc.identifier}/${doc.identifier}.mp3`, 
-        tags: [],
-        genre: 'Archive',
+        lyricsAvailable: false,
+        downloadAvailable: true,
+        genres: ['Archive'],
+        moodTags: [],
+        sourceLabel: 'Legal',
       }));
 
       return { tracks, artists: [], albums: [] };
@@ -44,15 +48,20 @@ export class IAAdapter extends BaseAdapter {
       
       if (!data.response || !data.response.docs) return [];
 
-      return data.response.docs.map((doc: any) => ({
+      return data.response.docs.map((doc: any) => normalizeTrack({
         id: `ia_${doc.identifier}`,
         title: doc.title,
+        artist: Array.isArray(doc.creator) ? doc.creator[0] : (doc.creator || 'Unknown Creator'),
         artistId: `ia_creator_${doc.creator || 'unknown'}`,
-        artistName: Array.isArray(doc.creator) ? doc.creator[0] : (doc.creator || 'Unknown Creator'),
-        artworkUrl: `https://archive.org/services/img/${doc.identifier}`,
+        artwork: `https://archive.org/services/img/${doc.identifier}`,
         duration: this.parseIADuration(doc.length),
-        sourceType: 'internet_archive',
+        sourceType: 'legal',
         streamUrl: `https://archive.org/download/${doc.identifier}/${doc.identifier}.mp3`,
+        lyricsAvailable: false,
+        downloadAvailable: true,
+        genres: ['Archive'],
+        moodTags: [],
+        sourceLabel: 'Legal',
       }));
     } catch (e) {
       console.error('IA trending failed', e);
@@ -73,16 +82,21 @@ export class IAAdapter extends BaseAdapter {
       ? `https://archive.org/download/${identifier}/${mp3File.name}` 
       : `https://archive.org/download/${identifier}/${identifier}.mp3`;
 
-    return {
+    return normalizeTrack({
       id: trackId,
       title: data.metadata.title || 'Unknown Title',
+      artist: Array.isArray(data.metadata.creator) ? data.metadata.creator[0] : (data.metadata.creator || 'Unknown Creator'),
       artistId: `ia_creator_${data.metadata.creator || 'unknown'}`,
-      artistName: Array.isArray(data.metadata.creator) ? data.metadata.creator[0] : (data.metadata.creator || 'Unknown Creator'),
-      artworkUrl: `https://archive.org/services/img/${identifier}`,
+      artwork: `https://archive.org/services/img/${identifier}`,
       duration: mp3File ? this.parseIADuration(mp3File.length) : 0,
-      sourceType: 'internet_archive',
+      sourceType: 'legal',
       streamUrl,
-    };
+      lyricsAvailable: false,
+      downloadAvailable: true,
+      genres: ['Archive'],
+      moodTags: [],
+      sourceLabel: 'Legal',
+    });
   }
 
   async getPlaylist(playlistId: string): Promise<Playlist> {
