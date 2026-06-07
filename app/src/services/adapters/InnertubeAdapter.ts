@@ -167,9 +167,19 @@ async function requestPlayer(videoId: string, client: (typeof CLIENTS)[number]):
  */
 export async function resolveViaInnertube(videoId: string): Promise<string | null> {
   if (!videoId) return null;
-  for (const client of CLIENTS) {
-    const url = await requestPlayer(videoId, client);
-    if (url) return url;
+  
+  // Try each client multiple times for better resilience
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (const client of CLIENTS) {
+      try {
+        const url = await requestPlayer(videoId, client);
+        if (url) return url;
+      } catch {
+        // Continue to next client
+      }
+    }
+    // Slight delay before retry
+    if (attempt === 0) await new Promise(r => setTimeout(r, 300));
   }
   return null;
 }
@@ -248,27 +258,50 @@ function collectByKey(obj: unknown, key: string, out: unknown[] = []): unknown[]
 }
 
 async function ytmSearch(query: string): Promise<unknown | null> {
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const res = await fetch(YTM_SEARCH_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-        Origin: 'https://music.youtube.com',
+  // Try multiple endpoints and user agents for robustness
+  const attempts = [
+    {
+      endpoint: YTM_SEARCH_ENDPOINT,
+      context: YTM_CONTEXT,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36',
+    },
+    {
+      endpoint: 'https://www.youtube.com/youtubei/v1/search?prettyPrint=false',
+      context: {
+        client: { clientName: 'WEB', clientVersion: '2.20240215.01.00', hl: 'en', gl: 'US' },
       },
-      body: JSON.stringify({ context: YTM_CONTEXT, query, params: SONGS_FILTER_PARAMS }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(tid);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    clearTimeout(tid);
-    return null;
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36',
+    },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+      const res = await fetch(attempt.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': attempt.userAgent,
+          Origin: 'https://www.youtube.com',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        body: JSON.stringify({ 
+          context: attempt.context, 
+          query, 
+          params: SONGS_FILTER_PARAMS 
+        }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(tid);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch {
+      // try next attempt
+    }
   }
+  return null;
 }
 
 function parseDurationText(text: string): number {

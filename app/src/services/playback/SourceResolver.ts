@@ -9,6 +9,7 @@ import { ResolverHealth } from '@/src/services/playback/ResolverHealth';
 import { JioSaavnAdapter } from '@/src/services/adapters/JioSaavnAdapter';
 import { DeezerAdapter } from '@/src/services/adapters/DeezerAdapter';
 import { resolveViaInnertube, searchYouTubeVideoId } from '@/src/services/adapters/InnertubeAdapter';
+import { resolveViaYtDlp } from '@/src/services/adapters/YtDlpAdapter';
 
 export type PlaybackResolverState = 'buffering' | 'validating' | 'retrying' | 'ready' | 'failed';
 
@@ -55,6 +56,13 @@ const INVIDIOUS_INSTANCES = [
   'https://invidious.lunar.icu',
   'https://invidious.perennialte.ch',
   'https://inv.nadeko.net',
+  'https://iv.datura.network',
+  'https://invidious.io',
+  'https://yewtu.be',
+  'https://inv.riverside.rocks',
+  'https://invidio.us',
+  'https://invidious.protokolla.fi',
+  'https://inv.zzls.xyz',
 ];
 
 // Cobalt instances — rotated sequentially to avoid hammering one endpoint.
@@ -208,6 +216,18 @@ const RESOLVERS: StreamResolver[] = [
     },
   },
   {
+    name: 'ytdlp',
+    sourceLabel: 'Proxy',
+    statusMessage: 'Extracting via yt-dlp service',
+    trusted: true,
+    streamType: 'full_stream',
+    canHandle: (track) => Boolean(videoIdOf(track)),
+    resolve: async (track) => {
+      const url = await resolveViaYtDlp(videoIdOf(track)).catch(() => null);
+      return url ? { url, sourceLabel: 'Proxy' } : null;
+    },
+  },
+  {
     name: 'piped',
     sourceLabel: 'Piped',
     statusMessage: 'Fetching audio stream via Piped',
@@ -340,21 +360,18 @@ export class SourceResolver {
     const fullResult = await this.tryResolverGroup(FULL_STREAM_RESOLVERS, track, attemptedSources, options);
     if (fullResult) return fullResult;
 
-    // 5. Absolute last resort — preview-only sources (Deezer's ~30s clips).
-    // Tried only when every full-stream resolver has failed, marked clearly as
-    // `preview_only`, and never written to any cache so the next play attempt
-    // starts fresh and keeps looking for a full stream.
-    const previewResult = await this.tryResolverGroup(PREVIEW_RESOLVERS, track, attemptedSources, options);
-    if (previewResult) return previewResult;
+    // 5. Absolute last resort — DISABLED to prevent 30-second preview playback
+    // Skip preview-only resolvers completely — user prefers no playback over 30s clips
+    // const previewResult = await this.tryResolverGroup(PREVIEW_RESOLVERS, track, attemptedSources, options);
+    // if (previewResult) return previewResult;
 
-    // 6. Existing-preview passthrough — a Deezer search result already carries its
-    // ~30s preview in streamUrl. If no full stream could be found anywhere, play
-    // that clip (clearly flagged preview_only, never cached) rather than failing.
-    if (track.isPreviewOnly && track.streamUrl) {
-      attemptedSources.push('Deezer (30s preview)');
-      options.onState?.('ready', 'Preview only — no full stream available');
-      return this.finish(track, track.streamUrl, 'Legal', 'preview_only', 'deezer', attemptedSources);
-    }
+    // 6. Existing-preview passthrough — DISABLED to prevent 30-second preview fallback
+    // Reject preview-only fallback — fail loudly instead of playing 30s clips
+    // if (track.isPreviewOnly && track.streamUrl) {
+    //   attemptedSources.push('Deezer (30s preview)');
+    //   options.onState?.('ready', 'Preview only — no full stream available');
+    //   return this.finish(track, track.streamUrl, 'Legal', 'preview_only', 'deezer', attemptedSources);
+    // }
 
     options.onState?.('failed', 'No playable source found');
     throw new Error(`No playable source found. Tried: ${attemptedSources.join(', ') || 'none'}`);
