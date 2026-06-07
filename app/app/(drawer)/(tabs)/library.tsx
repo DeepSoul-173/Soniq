@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,7 +20,8 @@ import { useLibraryStore } from '@/src/store/libraryStore';
 import { usePlayerStore } from '@/src/store/playerStore';
 import { TrackItem } from '@/src/components/ui/TrackItem';
 import { Playlist, Track } from '@/src/models/types';
-import { getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { FONTS, getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { screenBackground } from '@/src/theme/backgrounds';
 import { PlaylistImporter } from '@/src/services/playlist/PlaylistImporter';
 import { useResponsiveLayout } from '@/src/hooks/useResponsiveLayout';
 
@@ -69,6 +70,12 @@ export default function LibraryScreen() {
     return savedPlaylists;
   }, [savedPlaylists]);
 
+  // If "Show recently played" gets turned off while the Recent tab is open, fall
+  // back to Playlists so the hidden tab's content isn't left showing.
+  useEffect(() => {
+    if (!settings.showRecentlyPlayed && activeTab === 'recent') setActiveTab('playlists');
+  }, [settings.showRecentlyPlayed, activeTab]);
+
   const tracks = activeTab === 'liked' ? likedTracks : recentlyPlayed;
 
   const renderTrack = ({ item, index }: { item: Track; index: number }) => (
@@ -76,7 +83,7 @@ export default function LibraryScreen() {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: screenBackground(settings, theme.background) }]}>
       <View style={styles.header}>
         <View>
           <Text style={[styles.title, { color: theme.text }]}>Your Library</Text>
@@ -102,7 +109,8 @@ export default function LibraryScreen() {
         {[
           ['playlists', 'Playlists'],
           ['liked', 'Liked'],
-          ['recent', 'Recent'],
+          // "Recent" tab hidden when the user turns off "Show recently played".
+          ...(settings.showRecentlyPlayed ? [['recent', 'Recent']] : []),
         ].map(([key, label]) => {
           const selected = activeTab === key;
           return (
@@ -249,8 +257,9 @@ const styles = StyleSheet.create({
     paddingTop: 18,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '900',
+    fontSize: 30,
+    fontWeight: '700',
+    fontFamily: FONTS.serif,
   },
   subtitle: {
     fontSize: 12,

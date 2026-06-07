@@ -2,11 +2,23 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { mmkvZustandStorage } from '@/src/store/mmkvStorage';
 
+/** Visual identity of the whole app. 'luxe' = Onyx & Ivory (quiet luxury),
+ *  'sakura' = dreamy anime night/day, 'classic' = neutral surfaces + accent color. */
+export type AppearanceSkin = 'luxe' | 'sakura' | 'classic';
+
+/** Custom app background (WhatsApp-wallpaper style). 'theme' = use the skin's own
+ *  backdrop; 'gradient'/'live' = a preset key; 'image' = a URI (curated remote or
+ *  a photo picked from the device). */
+export type BackgroundType = 'theme' | 'gradient' | 'live' | 'image';
+
 export interface AppSettings {
   // Profile & customization
   displayName: string;
   profileImageUri: string;
   accentColor: string;
+  appearanceSkin: AppearanceSkin;
+  backgroundType: BackgroundType;
+  backgroundValue: string;
   preferredListeningMoods: string[];
   useDenseLists: boolean;
   musicLanguage: string;
@@ -117,6 +129,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   displayName: 'Soniq Listener',
   profileImageUri: 'https://images.unsplash.com/photo-1516280440614-37939bbacd81?auto=format&fit=crop&q=80&w=400&h=400',
   accentColor: '#FF2A70',
+  appearanceSkin: 'luxe',
+  backgroundType: 'theme',
+  backgroundValue: '',
   preferredListeningMoods: ['Focus', 'Electronic', 'Ambient'],
   useDenseLists: false,
   musicLanguage: 'Auto',

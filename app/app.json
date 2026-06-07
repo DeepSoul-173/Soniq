@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "app",
+    "name": "Soniq",
     "slug": "app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "app",
+    "icon": "./assets/images/nemotron_logo.png",
+    "scheme": "soniq",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -34,7 +34,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/nemotron_logo.png",
         "backgroundColor": "#08090B"
       },
       "edgeToEdgeEnabled": true,
@@ -45,12 +45,12 @@
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.WAKE_LOCK"
       ],
-      "package": "com.anonymous.app"
+      "package": "com.deepsoul.soniq"
     },
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/nemotron_logo.png"
     },
     "plugins": [
       "expo-router",

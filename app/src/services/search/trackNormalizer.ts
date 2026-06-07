@@ -19,6 +19,7 @@ type NormalizeInput = {
   sourceLabel?: Track['sourceLabel'];
   localUri?: string;
   sourceValidatedAt?: number;
+  isPreviewOnly?: boolean;
 };
 
 export function normalizeTrack(input: NormalizeInput): Track {
@@ -51,6 +52,7 @@ export function normalizeTrack(input: NormalizeInput): Track {
     sourceLabel: input.sourceLabel,
     localUri: input.localUri,
     sourceValidatedAt: input.sourceValidatedAt,
+    isPreviewOnly: input.isPreviewOnly,
   };
 }
 

@@ -6,9 +6,13 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { UnifiedPlayer } from '@/src/components/player/UnifiedPlayer';
 import { MiniPlayer } from '@/src/components/player/MiniPlayer';
-import { FloatingPipPlayer } from '@/src/components/player/FloatingPipPlayer';
+import { GrainOverlay } from '@/src/components/ui/GrainOverlay';
+import { AppBackground } from '@/src/components/ui/AppBackground';
 import { useSettingsStore } from '@/src/store/settingsStore';
+import { getTheme } from '@/src/theme/musicTheme';
 import { AppIconService } from '@/src/services/AppIconService';
+import { PipedInstanceService } from '@/src/services/adapters/PipedInstanceService';
+import { PipedAdapter } from '@/src/services/adapters/PipedAdapter';
 
 // ── Global Error Boundary ─────────────────────────────────────────────────────
 // Catches fatal JS errors anywhere in the tree and renders a readable screen
@@ -61,6 +65,7 @@ const eb = StyleSheet.create({
 
 export default function RootLayout() {
   const { settings } = useSettingsStore();
+  const theme = getTheme(settings);
   const pathname = usePathname();
 
   const isPlayerModalActive = pathname === '/playerModal';
@@ -68,31 +73,34 @@ export default function RootLayout() {
   // Recover streak milestone on every cold launch (no-op if already earned).
   useEffect(() => {
     AppIconService.checkStreakMilestone().catch(() => undefined);
+    PipedInstanceService.refresh()
+      .then((urls) => { if (urls.length > 0) PipedAdapter.setInstances(urls); })
+      .catch(() => undefined);
   }, []);
 
   return (
     <RootErrorBoundary>
       <GestureHandlerRootView style={styles.gestureRoot}>
-        <SafeAreaProvider style={styles.container}>
+        <SafeAreaProvider style={[styles.container, { backgroundColor: theme.background }]}>
           <StatusBar style={settings.theme === 'light' ? 'dark' : 'light'} />
-          <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
+          {/* Custom app-wide backdrop (behind all screens; transparent when set to 'theme'). */}
+          <AppBackground />
+          <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right', contentStyle: { backgroundColor: 'transparent' } }}>
             <Stack.Screen name="(drawer)" />
             <Stack.Screen
               name="playerModal"
               options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
             />
           </Stack>
+          {/* App-wide film grain — touch-transparent, sits above content, below the dock. */}
+          <GrainOverlay />
           <UnifiedPlayer />
-          {/* MiniPlayer: absolute overlay on top of everything including the drawer */}
+          {/* MiniPlayer: compact in-app dock above the tab bar — not a system-level
+              floating window. True Android Picture-in-Picture would require a native
+              Activity-level integration, which is out of scope for an audio-first app. */}
           {!isPlayerModalActive && (
             <View style={styles.miniPlayerLayer} pointerEvents="box-none">
               <MiniPlayer />
-            </View>
-          )}
-          {/* Floating PiP: draggable overlay when user minimises the full player */}
-          {!isPlayerModalActive && (
-            <View style={styles.pipLayer} pointerEvents="box-none">
-              <FloatingPipPlayer />
             </View>
           )}
         </SafeAreaProvider>
@@ -112,14 +120,5 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     zIndex: 999,
-  },
-  pipLayer: {
-    bottom: 0,
-    elevation: 1000,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    zIndex: 1000,
   },
 });

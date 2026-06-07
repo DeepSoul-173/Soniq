@@ -14,8 +14,9 @@ import { useSettingsStore } from '@/src/store/settingsStore';
 import { usePlayerStore } from '@/src/store/playerStore';
 import { TrackItem } from '@/src/components/ui/TrackItem';
 import { Track } from '@/src/models/types';
-import { SearchService } from '@/src/services/SearchService';
-import { GENRE_OPTIONS, getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { SearchService } from '@/src/services/search/SearchService';
+import { GENRE_OPTIONS, FONTS, getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { screenBackground } from '@/src/theme/backgrounds';
 
 export default function SearchScreen() {
   const { settings } = useSettingsStore();
@@ -29,6 +30,14 @@ export default function SearchScreen() {
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
+    // When "Live search" is off, don't search on every keystroke — wait for the
+    // user to submit (handled by the input's onSubmitEditing). Still clear stale
+    // results when the box is emptied.
+    if (!settings.liveSearch) {
+      if (query.trim().length <= 2) setResults([]);
+      return;
+    }
+
     const timeout = setTimeout(() => {
       const trimmed = query.trim();
       if (trimmed.length > 2) {
@@ -39,7 +48,7 @@ export default function SearchScreen() {
     }, 450);
 
     return () => clearTimeout(timeout);
-  }, [query]);
+  }, [query, settings.liveSearch]);
 
   const performSearch = async (term: string) => {
     setLoading(true);
@@ -97,7 +106,7 @@ export default function SearchScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: screenBackground(settings, theme.background) }]}>
       <View style={styles.header}>
         <Text style={[styles.title, { color: theme.text }]}>Search</Text>
         <View style={[styles.searchBar, { backgroundColor: theme.elevated }]}>
@@ -188,8 +197,9 @@ const styles = StyleSheet.create({
     paddingTop: 18,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '900',
+    fontSize: 30,
+    fontWeight: '700',
+    fontFamily: FONTS.serif,
     marginBottom: 16,
   },
   searchBar: {

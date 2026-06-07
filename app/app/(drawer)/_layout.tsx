@@ -11,8 +11,10 @@ export default function DrawerLayout() {
   return (
     <Drawer 
       drawerContent={(props) => <CustomDrawerContent {...props} />}
-      screenOptions={{ 
+      screenOptions={{
         headerShown: false,
+        // Transparent scene area so a custom app background shows behind screens.
+        sceneStyle: { backgroundColor: 'transparent' },
         drawerStyle: {
           backgroundColor: theme.background,
           width: 280,

@@ -124,15 +124,6 @@ function PickerRow({
 
 // ─── Options ────────────────────────────────────────────────────────────────
 
-const APP_LANGUAGE_OPTIONS: PickerOption[] = [
-  { label: 'System Default', value: 'System' },
-  { label: 'English', value: 'English' },
-  { label: 'Hindi', value: 'Hindi' },
-  { label: 'Spanish', value: 'Spanish' },
-  { label: 'French', value: 'French' },
-  { label: 'Portuguese', value: 'Portuguese' },
-];
-
 // ─── Screen ─────────────────────────────────────────────────────────────────
 
 export default function OthersSettingsScreen() {
@@ -154,18 +145,6 @@ export default function OthersSettingsScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.content, { paddingBottom: getPlayerDockHeight(insets.bottom) }]}
       >
-        {/* ── App & language ── */}
-        <SectionHeader title="App & Language" theme={theme} />
-
-        <PickerRow
-          title="App Language"
-          description="Language used for the app interface."
-          value={settings.appLanguage}
-          options={APP_LANGUAGE_OPTIONS}
-          onChange={(v) => updateSetting('appLanguage', v)}
-          theme={theme}
-        />
-
         {/* ── Local files ── */}
         <SectionHeader title="Local Files" theme={theme} />
 
@@ -249,13 +228,6 @@ export default function OthersSettingsScreen() {
         {/* ── Audio & system ── */}
         <SectionHeader title="Audio & System" theme={theme} />
 
-        <ToggleRow
-          title="Support Equalizer"
-          description="Route audio through the system equalizer when available."
-          value={settings.supportEqualizer}
-          onChange={(v) => updateSetting('supportEqualizer', v)}
-          theme={theme}
-        />
         <ToggleRow
           title="Stop Music on App Close"
           description="Pause playback when the app is fully closed (not just minimised)."

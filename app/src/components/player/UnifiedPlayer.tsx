@@ -10,16 +10,25 @@ import { SourceResolver } from '@/src/services/playback/SourceResolver';
 import { SponsorBlock } from '@/src/services/playback/SponsorBlock';
 import { AppIconService } from '@/src/services/AppIconService';
 import { getLocalJSON, setLocalJSON } from '@/src/store/mmkvStorage';
+import { dbRecordListeningHistory } from '@/src/services/database/LibraryDatabase';
 
 const STREAM_CACHE_KEY = 'soniq-playback-source-cache';
 
 const PREFETCH_THRESHOLD_SECONDS = 15;
 
+/** Pulls the hostname out of a stream URL for diagnostics — avoids relying on the global `URL`. */
+function urlDomain(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const match = url.match(/^https?:\/\/([^/]+)/i);
+  return match ? match[1] : null;
+}
+
 export function UnifiedPlayer() {
   const {
     queue, currentIndex, isPlaying, setIsPlaying,
     setPlaybackState, nextTrack, setActiveEngine, setIsBuffering, seekRequest,
-    updateQueueTrack, setPlaybackResolverState, sleepTimer, setSleepTimer,
+    updateQueueTrack, setPlaybackResolverState, setPlaybackDiagnostics, sleepTimer, setSleepTimer,
+    playbackRate,
   } = usePlayerStore();
 
   const { settings } = useSettingsStore();
@@ -40,6 +49,11 @@ export function UnifiedPlayer() {
 
   const handledEndId = useRef<number | null>(null);
   const handledSeekId = useRef<number | null>(null);
+  // While a seek is in flight, the native player briefly keeps reporting the OLD
+  // currentTime (often ~0) before it jumps to the target — publishing that would
+  // make the slider bounce back to zero. We hold the UI at the target until the
+  // native position actually lands near it.
+  const seekTargetRef = useRef<number | null>(null);
   const lastTrackedId = useRef<string | null>(null);
   const resolvingTrackId = useRef<string | null>(null);
   // Tracks play intent so we can re-issue play() once the source is loaded.
@@ -49,30 +63,60 @@ export function UnifiedPlayer() {
   const handledSponsorRef = useRef<Set<number>>(new Set());
 
   // ── Audio mode (ducking + background) ───────────────────────────────────
+  // Honors the "Play in background" setting — when off, audio stops when the app
+  // is backgrounded instead of continuing with a notification.
   useEffect(() => {
     setAudioModeAsync({
       playsInSilentMode: true,
-      // Always play in background so the system notification appears.
-      shouldPlayInBackground: true,
+      shouldPlayInBackground: settings.playInBackground,
       interruptionMode: 'duckOthers',
     }).catch(() => undefined);
-  }, []);
+  }, [settings.playInBackground]);
 
-  // ── Notification / lockscreen metadata ───────────────────────────────────
+  // ── Notification / lock-screen media session ─────────────────────────────
+  // expo-audio 1.1's real API is `setActiveForLockScreen` / `updateLockScreenMetadata`
+  // (backed by a native MediaSessionService + notification on Android, MPNowPlayingInfoCenter
+  // on iOS) — NOT `setNotificationOptions`, which doesn't exist on AudioPlayer and silently
+  // no-ops.
+  //
+  // CRITICAL: `useAudioPlayer` builds a *new* native player every time the source URL
+  // changes, and our source briefly goes null while each track resolves. Activating the
+  // lock screen on a not-yet-loaded player binds the Android MediaSession to an empty,
+  // non-playing player — and the player it gets released a moment later, which clears the
+  // session. That race is why the notification appeared only sometimes. We now wait for
+  // `nativeStatus.isLoaded` so we always bind to the real, playing player.
   useEffect(() => {
-    if (!currentTrack || !nativePlayer) return;
+    if (!currentTrack || !isDirect || !nativePlayer || !nativeStatus.isLoaded) return;
+    const metadata = {
+      title: currentTrack.title || 'Soniq',
+      artist: currentTrack.artist || currentTrack.artistName || '',
+      albumTitle: currentTrack.album || currentTrack.albumName || '',
+      artworkUrl: currentTrack.artwork || currentTrack.artworkUrl || '',
+    };
     try {
-      const p = nativePlayer as any;
-      if (typeof p.setNotificationOptions === 'function') {
-        p.setNotificationOptions({
-          title: currentTrack.title || 'Soniq',
-          artist: currentTrack.artist || currentTrack.artistName || '',
-          album: currentTrack.album || currentTrack.albumName || '',
-          artworkUrl: currentTrack.artwork || currentTrack.artworkUrl || '',
-        });
-      }
-    } catch { /* expo-audio notification API may vary */ }
-  }, [currentTrack?.id, nativePlayer]);
+      nativePlayer.setActiveForLockScreen(true, metadata, { showSeekForward: true, showSeekBackward: true });
+    } catch { /* unsupported on this platform/build — media session simply won't appear */ }
+  }, [currentTrack?.id, currentTrack?.title, isDirect, nativePlayer, nativeStatus.isLoaded]);
+
+  // Keep lock-screen metadata fresh if the track's artwork/title resolve after the fact
+  // (e.g. SourceResolver fills in artwork once the stream is ready).
+  useEffect(() => {
+    if (!currentTrack || !isDirect || !nativePlayer) return;
+    try {
+      nativePlayer.updateLockScreenMetadata({
+        title: currentTrack.title || 'Soniq',
+        artist: currentTrack.artist || currentTrack.artistName || '',
+        albumTitle: currentTrack.album || currentTrack.albumName || '',
+        artworkUrl: currentTrack.artwork || currentTrack.artworkUrl || '',
+      });
+    } catch { /* no-op if this player isn't the active lock-screen controller yet */ }
+  }, [currentTrack?.artwork, currentTrack?.artworkUrl, currentTrack?.id, isDirect, nativePlayer]);
+
+  // Release lock-screen controls when playback ends entirely.
+  useEffect(() => {
+    if (currentTrack || !nativePlayer) return;
+    try { nativePlayer.clearLockScreenControls(); } catch { /* no-op */ }
+  }, [currentTrack, nativePlayer]);
 
   // ── Source resolution ────────────────────────────────────────────────────
   useEffect(() => {
@@ -91,13 +135,34 @@ export function UnifiedPlayer() {
       .then((resolved) => {
         if (!cancelled) {
           updateQueueTrack(currentIndex, resolved.track);
-          setPlaybackResolverState('ready', `Playing from ${resolved.sourceLabel}`, resolved.sourceLabel);
+          const isPreview = resolved.streamType === 'preview_only';
+          setPlaybackResolverState(
+            'ready',
+            isPreview ? `Preview only — playing 30s clip from ${resolved.sourceLabel}` : `Playing from ${resolved.sourceLabel}`,
+            resolved.sourceLabel
+          );
+          setPlaybackDiagnostics({
+            resolverName: resolved.resolverName,
+            sourceLabel: resolved.sourceLabel,
+            streamType: resolved.streamType,
+            urlDomain: urlDomain(resolved.url),
+            failureReason: null,
+            attemptedSources: resolved.attemptedSources,
+          });
         }
       })
       .catch((error) => {
         console.error('Failed to prepare stream', error);
         if (!cancelled) {
           setPlaybackResolverState('failed', 'Playback failed. No alternate source worked.');
+          setPlaybackDiagnostics({
+            resolverName: null,
+            sourceLabel: null,
+            streamType: 'invalid',
+            urlDomain: null,
+            failureReason: error instanceof Error ? error.message : 'No playable source found',
+            attemptedSources: [],
+          });
           setIsPlaying(false);
         }
       })
@@ -107,7 +172,7 @@ export function UnifiedPlayer() {
       });
 
     return () => { cancelled = true; };
-  }, [currentIndex, currentTrack, hasFreshSource, setIsBuffering, setIsPlaying, setPlaybackResolverState, updateQueueTrack]);
+  }, [currentIndex, currentTrack, hasFreshSource, setIsBuffering, setIsPlaying, setPlaybackDiagnostics, setPlaybackResolverState, updateQueueTrack]);
 
   // ── Play / pause control ─────────────────────────────────────────────────
   useEffect(() => {
@@ -141,18 +206,32 @@ export function UnifiedPlayer() {
   }, [currentTrack?.id, isDirect, isPlaying, hasFreshSource, nativeStatus.isLoaded, nativePlayer]);
 
   // ── Recently played tracking ─────────────────────────────────────────────
+  // Skipped entirely during a Private Session so nothing is recorded.
   useEffect(() => {
+    if (settings.privateSession) return;
     if (!currentTrack || currentTrack.id === lastTrackedId.current) return;
     lastTrackedId.current = currentTrack.id;
     addRecentlyPlayed(currentTrack);
-  }, [addRecentlyPlayed, currentTrack]);
+  }, [addRecentlyPlayed, currentTrack, settings.privateSession]);
 
   // ── Playback position + status sync ─────────────────────────────────────
   useEffect(() => {
     if (!isDirect || !nativeStatus) return;
 
     const fallbackDuration = currentTrack?.duration || 0;
-    setPlaybackState(nativeStatus.currentTime || 0, nativeStatus.duration || fallbackDuration);
+    // Only trust currentTime once the player has actually loaded the *current*
+    // source — otherwise we'd briefly re-publish the outgoing track's elapsed
+    // time during the swap window, making the slider appear not to reset.
+    const rawPosition = nativeStatus.isLoaded ? (nativeStatus.currentTime || 0) : 0;
+    let position = rawPosition;
+    if (seekTargetRef.current !== null) {
+      if (Math.abs(rawPosition - seekTargetRef.current) <= 0.75) {
+        seekTargetRef.current = null; // seek landed — resume trusting the player
+      } else {
+        position = seekTargetRef.current; // hold at target, ignore the stale value
+      }
+    }
+    setPlaybackState(position, nativeStatus.duration || fallbackDuration);
     setIsBuffering(Boolean(nativeStatus.isBuffering));
     if (nativeStatus.isBuffering) {
       setPlaybackResolverState('buffering', 'Buffering audio');
@@ -173,7 +252,7 @@ export function UnifiedPlayer() {
 
     if (nativeStatus.didJustFinish && handledEndId.current !== nativeStatus.id) {
       handledEndId.current = nativeStatus.id;
-      handleTrackEnd();
+      handleTrackEnd(nativeStatus.currentTime || 0);
     }
   }, [currentTrack?.duration, currentTrack?.sourceLabel, currentTrack?.streamUrl, isDirect, nativeStatus, setIsBuffering, setPlaybackResolverState, setPlaybackState]);
 
@@ -181,8 +260,23 @@ export function UnifiedPlayer() {
   useEffect(() => {
     if (!seekRequest || handledSeekId.current === seekRequest.requestId) return;
     handledSeekId.current = seekRequest.requestId;
-    if (isDirect) nativePlayer?.seekTo(seekRequest.position);
+    if (isDirect) {
+      seekTargetRef.current = seekRequest.position;
+      nativePlayer?.seekTo(seekRequest.position);
+    }
   }, [isDirect, nativePlayer, seekRequest]);
+
+  // ── Playback speed ───────────────────────────────────────────────────────
+  // Applies the rate chosen in the player modal to the real native player, with
+  // pitch correction so 1.5×/2× don't sound chipmunky. Re-applied whenever the
+  // track reloads (a fresh AudioPlayer instance defaults back to 1×).
+  useEffect(() => {
+    if (!isDirect || !nativePlayer) return;
+    try {
+      nativePlayer.shouldCorrectPitch = true;
+      nativePlayer.setPlaybackRate(playbackRate, 'high');
+    } catch { /* unsupported — falls back to normal speed */ }
+  }, [playbackRate, isDirect, nativePlayer, currentTrack?.id, nativeStatus.isLoaded]);
 
   // ── Sleep timer ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -260,9 +354,14 @@ export function UnifiedPlayer() {
   }, [nativeStatus.currentTime, isDirect, nativeStatus.isLoaded, nativePlayer]);
 
   // ── Track end ────────────────────────────────────────────────────────────
-  const handleTrackEnd = async () => {
+  const handleTrackEnd = async (listenedSeconds = 0) => {
     // Increment streak counter; auto-switches to Gold icon at 100 plays.
     AppIconService.recordPlay().catch(() => undefined);
+
+    // No history is recorded during a Private Session.
+    if (currentTrack && listenedSeconds > 10 && !settings.privateSession) {
+      dbRecordListeningHistory(currentTrack, listenedSeconds).catch(() => undefined);
+    }
 
     // Sleep timer: end of track mode
     if (sleepTimer?.mode === 'end_of_track') {
@@ -279,7 +378,9 @@ export function UnifiedPlayer() {
       return;
     }
 
-    if (currentIndex === queue.length - 1 && settings.autoAddRecommendations) {
+    // The "Autoplay" toggle (Settings → Playback) controls whether the queue is
+    // auto-extended with recommendations when it runs out.
+    if (currentIndex === queue.length - 1 && settings.autoplay) {
       // Fill queue with a full radio batch (5 tracks) rather than one at a time.
       const recs = await RecommendationEngine.getRadioQueue(currentTrack, 5).catch(() => []);
       for (const rec of recs) usePlayerStore.getState().addToQueue(rec);

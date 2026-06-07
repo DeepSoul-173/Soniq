@@ -1,22 +1,38 @@
 import { Track } from '@/src/models/types';
 import { SearchService } from '@/src/services/search/SearchService';
 import { PipedAdapter } from '@/src/services/adapters/PipedAdapter';
+import { DeezerAdapter } from '@/src/services/adapters/DeezerAdapter';
+import { JamendoAdapter } from '@/src/services/adapters/JamendoAdapter';
 import { useLibraryStore } from '@/src/store/libraryStore';
+import { getLocalJSON, setLocalJSON } from '@/src/store/mmkvStorage';
+import { UserTasteEngine, TasteProfile } from '@/src/services/recommendations/UserTasteEngine';
 import { useSettingsStore } from '@/src/store/settingsStore';
 import {
   dbGetOnRepeat,
-  dbGetRecentlyDiscovered,
   dbGetRecentlyPlayed,
 } from '@/src/services/database/LibraryDatabase';
+
+// Bumped to -v2 when the curated artist roster was replaced with dynamic
+// recommendations, so any stale cache holding the old hardcoded names is ignored.
+const HOME_CACHE_KEY = 'soniq-home-cache-v2';
+const HOME_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+export type HomeRecommendationsResult = {
+  sections: HomeRecommendationSection[];
+  loadMore: () => Promise<HomeRecommendationSection[]>;
+};
 
 export type ArtistRecommendation = {
   id: string;
   name: string;
   image?: string;
   reason: string;
+  searchQuery?: string;
 };
 
-export type AlbumRecommendation = {
+type AlbumRecommendation = {
   id: string;
   title: string;
   artist: string;
@@ -34,7 +50,6 @@ export type HomeRecommendationSection = {
   albums?: AlbumRecommendation[];
 };
 
-const FALLBACK_INTERESTS = ['Electronic', 'Indie', 'Focus', 'Ambient', 'Rock', 'Acoustic'];
 const pipedAdapter = new PipedAdapter();
 
 // ── BaRT-style queue blending ────────────────────────────────────────────────
@@ -101,6 +116,67 @@ export class RecommendationEngine {
     return queue[0] ?? null;
   }
 
+  // ── Dynamic artist suggestions ─────────────────────────────────────────────
+  // Blends, in priority order: (1) the artists you marked as favourites, (2) the
+  // artists you actually play the most (from SQLite history), (3) RELATED artists
+  // discovered live from YouTube's "Up Next" for your top track, and only then
+  // (4) a language-matched curated fallback. The list shifts as your listening
+  // changes — nothing here is a fixed hardcoded roster.
+
+  private static async buildArtistRecommendations(
+    profile: TasteProfile,
+    favorites: string[]
+  ): Promise<ArtistRecommendation[]> {
+    const out: ArtistRecommendation[] = [];
+    const seen = new Set<string>();
+    const add = (name: string, reason: string) => {
+      const clean = (name || '').trim();
+      const key = clean.toLowerCase();
+      if (!clean || key === 'unknown artist' || seen.has(key) || out.length >= 12) return;
+      seen.add(key);
+      out.push({
+        id: `art_${key.replace(/\s+/g, '_')}`,
+        name: clean,
+        reason,
+        searchQuery: `${clean} best songs`,
+      });
+    };
+
+    // 1. Your favourites (chosen in Profile)
+    for (const fav of favorites) add(fav, 'Your favourite');
+
+    // 2. Most played (listening history)
+    for (const a of profile.topArtists.slice(0, 6)) add(a.name, `Played ${a.count}×`);
+
+    // 3. Related artists — discovered from the YouTube "Up Next" of your top track
+    const seedTrack = profile.topTracks[0];
+    const seedVideoId = seedTrack?.trackId?.replace(/^piped_/, '');
+    if (seedVideoId && seedVideoId !== seedTrack?.trackId) {
+      const related = await pipedAdapter.getRelatedStreams(seedVideoId).catch(() => [] as Track[]);
+      const seedArtist = seedTrack?.artist || 'your taste';
+      for (const t of related) {
+        add(t.artist || t.artistName || '', `Related to ${seedArtist}`);
+        if (out.length >= 12) break;
+      }
+    }
+
+    // 4. Cold-start fallback — no favourites or history yet. Instead of a fixed
+    // hardcoded roster, pull real artists from a LIVE trending search biased to the
+    // user's main language, so even a brand-new user sees dynamic, current names.
+    if (out.length < 8) {
+      const lang = profile.dominantLanguages[0];
+      const year = new Date().getFullYear();
+      const query = lang && lang !== 'english' ? `top ${lang} songs ${year}` : `top songs ${year}`;
+      const tracks = await SearchService.searchAll(query).catch(() => [] as Track[]);
+      for (const t of tracks) {
+        add(t.artist || t.artistName || '', 'Trending now');
+        if (out.length >= 12) break;
+      }
+    }
+
+    return out.slice(0, 12);
+  }
+
   // ── Explore: YouTube Up Next via Piped relatedStreams ──────────────────────
 
   private static async fetchExploreTracks(currentTrack: Track): Promise<Track[]> {
@@ -126,10 +202,9 @@ export class RecommendationEngine {
       related = await SearchService.searchAll(query).catch(() => []);
     }
 
-    // Secondary fallback: personalized seeds from user preferences
+    // Secondary fallback: generic popular music query
     if (related.length === 0) {
-      const seeds = this.getPersonalizedSeeds();
-      const query = seeds[0] ?? (artist || 'popular music');
+      const query = artist ? `${artist} popular songs` : `top songs ${new Date().getFullYear()}`;
       related = await SearchService.searchAll(query).catch(() => []);
     }
 
@@ -176,64 +251,97 @@ export class RecommendationEngine {
     }));
   }
 
-  // ── Home screen recommendations (unchanged logic, compatible) ──────────────
+  // ── Home screen recommendations ───────────────────────────────────────────
+  // Tiered loading: Tier 1 (local + Jamendo + one search) renders immediately;
+  // Tier 2 (network-heavy) loads lazily with a 500 ms stagger to avoid
+  // rate-limiting community Piped servers.
 
-  static async getHomeRecommendations(): Promise<HomeRecommendationSection[]> {
-    const interests = this.getUserInterests();
-    const { likedTracks, recentlyPlayed } = useLibraryStore.getState();
-    const likedSeeds = likedTracks.slice(0, 4);
-    const recentSeeds = recentlyPlayed.slice(0, 6);
-    const primaryInterest = interests[0] || 'Music';
+  static async getHomeRecommendations(): Promise<HomeRecommendationsResult> {
+    const year = new Date().getFullYear();
 
-    const settings = useSettingsStore.getState().settings;
-    const personalSeeds = this.getPersonalizedSeeds();
-    const primarySeed = personalSeeds[0] ?? `${primaryInterest} songs`;
+    // Serve from MMKV cache if it's fresh (< 30 min old).
+    const cached = getLocalJSON<{ sections: HomeRecommendationSection[]; savedAt: number }>(
+      HOME_CACHE_KEY, { sections: [], savedAt: 0 }
+    );
+    if (cached.savedAt > 0 && Date.now() - cached.savedAt < HOME_CACHE_TTL) {
+      return { sections: cached.sections, loadMore: async () => [] };
+    }
 
-    // Language-aware trending: prefer user's top selected language
-    const trendingLang = (settings.preferredLanguages ?? [])[0] ?? settings.musicLanguage;
+    const { recentlyPlayed, likedTracks } = useLibraryStore.getState();
+    const favoriteArtists = useSettingsStore.getState().settings.favoriteArtists ?? [];
 
-    const [
-      madeForYou, basedOnTypes, trending, moodMix,
-      onRepeatDb, recentlyDiscoveredDb,
-      globalHits, popularNow, newReleases,
-    ] = await Promise.all([
-      personalSeeds.length > 0
-        ? SearchService.searchAll(primarySeed)
-        : this.searchFromSeeds(likedSeeds, `${primaryInterest} songs`),
-      SearchService.searchAll(`${interests.slice(0, 3).join(' ')} music`),
-      SearchService.searchAll(`${trendingLang} trending songs 2025`),
-      SearchService.searchAll(`${primaryInterest} ${settings.recommendationFreshness} mix`),
-      dbGetOnRepeat(3, 30),
-      dbGetRecentlyDiscovered(30),
-      SearchService.searchAll('global top hits 2025'),
-      SearchService.searchAll('most popular songs right now'),
-      SearchService.searchAll('new music releases 2025'),
+    const profile = await UserTasteEngine.getProfile().catch((): TasteProfile => ({
+      topArtists: [], topTracks: [], dominantLanguages: ['english'],
+      totalListeningSeconds: 0, hasHistory: false, refreshedAt: 0,
+    }));
+
+    const queries = UserTasteEngine.getPersonalizedQueries(profile);
+    const dominantLang = profile.dominantLanguages[0] ?? 'english';
+    const isIndian = ['hindi', 'tamil', 'telugu', 'kannada', 'malayalam'].includes(dominantLang);
+    const langLabel = dominantLang.charAt(0).toUpperCase() + dominantLang.slice(1);
+
+    // ── TIER 1: fast — local DB + Jamendo + one personalised search ───────────
+    const jamendoAdapter = new JamendoAdapter();
+    const [madeForYou, onRepeatDb, jamendo, artistsWithImages] = await Promise.all([
+      SearchService.searchAll(queries[0] ?? `top hits ${year}`),
+      dbGetOnRepeat(3, 30).catch(() => [] as Track[]),
+      jamendoAdapter.getTrendingTracks().catch(() => [] as Track[]),
+      (async () => {
+        const raw = await this.buildArtistRecommendations(profile, favoriteArtists);
+        return Promise.all(
+          raw.map(async (a) => {
+            const image = await DeezerAdapter.getArtistImage(a.name).catch(() => null);
+            return { ...a, image: image ?? undefined };
+          })
+        );
+      })(),
     ]);
 
-    const continueListening = recentSeeds.length ? recentSeeds : madeForYou.slice(0, 6);
-    const artistPool = [...likedSeeds, ...recentSeeds, ...basedOnTypes, ...madeForYou];
-    const artists = this.buildArtistRecommendations(artistPool);
-    const albums = this.buildAlbumRecommendations(artistPool);
+    const tier1: HomeRecommendationSection[] = [];
 
-    const onRepeat = onRepeatDb.length ? onRepeatDb : likedTracks.filter((t) => !!t.id).slice(0, 20);
-    const recentlyDiscovered = recentlyDiscoveredDb.length
-      ? recentlyDiscoveredDb
-      : recentlyPlayed.slice(0, 20);
-
-    const sections: HomeRecommendationSection[] = [
-      {
-        id: 'made_for_you',
-        title: 'Made for You',
-        subtitle: (settings.favoriteArtists ?? []).length > 0
-          ? `Based on ${(settings.favoriteArtists ?? []).slice(0, 2).join(', ')}`
-          : `Built from ${interests.slice(0, 3).join(', ') || 'your listening'}`,
+    if (recentlyPlayed.length > 0 && useSettingsStore.getState().settings.showRecentlyPlayed) {
+      tier1.push({
+        id: 'recently_played',
+        title: 'Recently Played',
+        subtitle: 'Pick up where you left off',
         kind: 'tracks',
-        tracks: madeForYou,
-      },
-    ];
+        tracks: recentlyPlayed.slice(0, 20),
+      });
+    }
 
-    if (onRepeat.length) {
-      sections.push({
+    tier1.push({
+      id: 'made_for_you',
+      title: profile.hasHistory ? 'Made For You' : 'Discover Music',
+      subtitle: profile.hasHistory
+        ? `Based on ${profile.topArtists.slice(0, 2).map((a) => a.name).join(', ') || 'your listening'}`
+        : "Explore what's trending right now",
+      kind: 'tracks',
+      tracks: madeForYou,
+    });
+
+    tier1.push({
+      id: 'artists',
+      title: profile.hasHistory ? 'Your Artists' : 'Popular Artists',
+      subtitle: profile.hasHistory
+        ? 'Based on your listening history'
+        : 'Tap an artist to play their top songs',
+      kind: 'artists',
+      artists: artistsWithImages,
+    });
+
+    if (jamendo.length > 0) {
+      tier1.push({
+        id: 'legal_picks',
+        title: 'Legal Picks',
+        subtitle: 'Free, licensed music via Jamendo',
+        kind: 'tracks',
+        tracks: jamendo,
+      });
+    }
+
+    const onRepeat = onRepeatDb.length ? onRepeatDb : likedTracks.slice(0, 20);
+    if (onRepeat.length > 0) {
+      tier1.push({
         id: 'on_repeat',
         title: 'On Repeat',
         subtitle: 'Songs you keep coming back to',
@@ -242,174 +350,36 @@ export class RecommendationEngine {
       });
     }
 
-    sections.push(
-      {
-        id: 'based_on_types',
-        title: 'Based on Your Types',
-        subtitle: 'Liked genres and listening preferences',
-        kind: 'tracks',
-        tracks: basedOnTypes,
-      },
-      {
-        id: 'artists',
-        title: 'Artists You May Like',
-        subtitle: 'Singers linked to your saved tracks',
-        kind: 'artists',
-        artists,
-      },
-      {
-        id: 'albums',
-        title: 'Albums Featuring Songs You Like',
-        subtitle: 'Grouped from recent and liked music',
-        kind: 'albums',
-        albums,
-      },
-      {
-        id: 'daily_mixes',
-        title: 'Daily Mixes by Mood',
-        subtitle: `${primaryInterest} and adjacent sounds`,
-        kind: 'mixes',
-        tracks: moodMix,
-      },
-      {
-        id: 'continue',
-        title: 'Continue Listening',
-        subtitle: 'Recent tracks stored locally',
-        kind: 'tracks',
-        tracks: continueListening,
-      },
-    );
+    // ── TIER 2: lazy — network-heavy searches, 500 ms stagger ─────────────────
+    const loadMore = async (): Promise<HomeRecommendationSection[]> => {
+      const tier2: HomeRecommendationSection[] = [];
 
-    if (recentlyDiscovered.length) {
-      sections.push({
-        id: 'recently_discovered',
-        title: 'Recently Discovered',
-        subtitle: 'New tracks from your last 7 days',
-        kind: 'tracks',
-        tracks: recentlyDiscovered,
-      });
-    }
+      const globalHits = await SearchService.searchAll(`global top hits ${year}`).catch(() => [] as Track[]);
+      tier2.push({ id: 'global_hits', title: 'Global Hits', subtitle: 'Top tracks worldwide right now', kind: 'tracks', tracks: globalHits });
 
-    sections.push(
-      {
-        id: 'trending',
-        title: 'Trending Now',
-        subtitle: `${trendingLang} charts`,
-        kind: 'tracks',
-        tracks: trending,
-      },
-      {
-        id: 'global_hits',
-        title: 'Global Hits',
-        subtitle: 'Top tracks worldwide',
-        kind: 'tracks',
-        tracks: globalHits,
-      },
-      {
-        id: 'everyones_choice',
-        title: "Everyone's Choice",
-        subtitle: 'Most played right now',
-        kind: 'tracks',
-        tracks: popularNow,
-      },
-      {
-        id: 'new_releases',
-        title: 'New Releases',
-        subtitle: 'Fresh drops this week',
-        kind: 'tracks',
-        tracks: newReleases,
-      }
-    );
+      await delay(500);
+      const langHits = await (isIndian
+        ? SearchService.searchAll(`${dominantLang} hit songs`)
+        : SearchService.searchAll(queries[1] ?? 'top songs right now')
+      ).catch(() => [] as Track[]);
+      tier2.push({ id: 'lang_hits', title: isIndian ? `${langLabel} Hits` : 'Chart Toppers', subtitle: isIndian ? `Top ${langLabel} songs` : 'Songs everyone is playing', kind: 'tracks', tracks: langHits });
 
-    return sections;
+      await delay(500);
+      const trending = await SearchService.searchAll(`${dominantLang} top songs ${year}`).catch(() => [] as Track[]);
+      tier2.push({ id: 'trending', title: 'Trending Now', subtitle: 'What people are listening to today', kind: 'tracks', tracks: trending });
+
+      await delay(500);
+      const newReleases = await SearchService.searchAll(`new music releases ${year}`).catch(() => [] as Track[]);
+      tier2.push({ id: 'new_releases', title: 'New Releases', subtitle: 'Fresh drops this week', kind: 'tracks', tracks: newReleases });
+
+      // Persist combined result to MMKV so the next visit is instant.
+      setLocalJSON(HOME_CACHE_KEY, { sections: [...tier1, ...tier2], savedAt: Date.now() });
+      return tier2;
+    };
+
+    return { sections: tier1, loadMore };
   }
 
-  private static getUserInterests() {
-    const settings = useSettingsStore.getState().settings;
-    const likedGenres = useLibraryStore.getState().likedTracks.flatMap((track) => track.genres || track.moodTags || []);
-    const interests = [
-      ...(settings.preferredListeningMoods ?? []),
-      ...(settings.favoriteGenres ?? []),
-      ...likedGenres,
-    ].filter((item) => typeof item === 'string' && item.trim().length > 0);
-
-    return Array.from(new Set(interests.length ? interests : FALLBACK_INTERESTS));
-  }
-
-  /** Returns search queries enriched with the user's favorite artists and languages. */
-  private static getPersonalizedSeeds(): string[] {
-    const settings = useSettingsStore.getState().settings;
-    const artists = settings.favoriteArtists ?? [];
-    const languages = settings.preferredLanguages ?? [];
-    const genres = [...(settings.preferredListeningMoods ?? []), ...(settings.favoriteGenres ?? [])];
-
-    const seeds: string[] = [];
-
-    // Rotate artists into query seeds (top 3 to keep it focused)
-    for (const artist of artists.slice(0, 3)) {
-      const lang = languages[0];
-      seeds.push(lang ? `${artist} ${lang} songs` : `${artist} best songs`);
-    }
-
-    // Language + genre combinations
-    for (const lang of languages.slice(0, 2)) {
-      const genre = genres[0];
-      seeds.push(genre ? `${lang} ${genre} music` : `${lang} top songs`);
-    }
-
-    return seeds;
-  }
-
-  private static async searchFromSeeds(seeds: Track[], fallback: string) {
-    if (seeds.length === 0) return SearchService.searchAll(fallback);
-
-    const query = seeds
-      .map((track) => track.artist || track.artistName || track.title)
-      .filter(Boolean)
-      .slice(0, 3)
-      .join(' ');
-
-    return SearchService.searchAll(query || fallback);
-  }
-
-  private static buildArtistRecommendations(tracks: Track[]): ArtistRecommendation[] {
-    const artists = new Map<string, ArtistRecommendation>();
-
-    tracks.forEach((track) => {
-      const name = track.artist || track.artistName;
-      if (!name || artists.has(name)) return;
-      artists.set(name, {
-        id: `artist_${name}`,
-        name,
-        image: track.artwork || track.artworkUrl,
-        reason: track.genres?.[0] || track.moodTags?.[0] || 'Your listening history',
-      });
-    });
-
-    return Array.from(artists.values()).slice(0, 10);
-  }
-
-  private static buildAlbumRecommendations(tracks: Track[]): AlbumRecommendation[] {
-    const albums = new Map<string, AlbumRecommendation>();
-
-    tracks.forEach((track) => {
-      const title = track.album || track.albumName || `${track.artist || track.artistName} essentials`;
-      if (albums.has(title)) {
-        albums.get(title)?.tracks.push(track);
-        return;
-      }
-
-      albums.set(title, {
-        id: `album_${title}`,
-        title,
-        artist: track.artist || track.artistName,
-        artwork: track.artwork || track.artworkUrl,
-        tracks: [track],
-      });
-    });
-
-    return Array.from(albums.values()).slice(0, 10);
-  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

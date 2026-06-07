@@ -14,6 +14,9 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        // Transparent scene area so a custom app background can show behind screens.
+        // Screens still paint their own solid colour when no wallpaper is set.
+        sceneStyle: { backgroundColor: 'transparent' },
         tabBarHideOnKeyboard: true,
         tabBarStyle: {
           backgroundColor: theme.overlay,

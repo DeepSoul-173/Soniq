@@ -4,7 +4,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSettingsStore } from '@/src/store/settingsStore';
-import { getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { FONTS, getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { screenBackground } from '@/src/theme/backgrounds';
 
 const safeJoin = (value: unknown, separator = ', ') =>
   Array.isArray(value)
@@ -33,19 +34,19 @@ export default function SettingsIndexScreen() {
     },
     {
       title: 'Music & Playback',
-      description: 'Language, region, quality, session, autoplay, and caching.',
+      description: 'Language, region, session, autoplay, and caching.',
       icon: 'play-circle-outline',
       onPress: () => router.push('/settings/playback' as any),
     },
     {
       title: 'Audio Quality',
-      description: 'Streaming tiers, download quality, and data-saving options.',
+      description: 'Download quality and data-saving options.',
       icon: 'musical-note-outline',
       onPress: () => router.push('/settings/audio-quality' as any),
     },
     {
       title: 'Others',
-      description: 'App language, local files, search, equalizer, and proxy.',
+      description: 'Local files, search, and proxy.',
       icon: 'options-outline',
       onPress: () => router.push('/settings/others' as any),
     },
@@ -70,7 +71,7 @@ export default function SettingsIndexScreen() {
   ];
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: screenBackground(settings, theme.background) }]}>
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: getPlayerDockHeight(insets.bottom) }]}
@@ -135,8 +136,9 @@ const styles = StyleSheet.create({
     paddingTop: 18,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '900',
+    fontSize: 30,
+    fontWeight: '700',
+    fontFamily: FONTS.serif,
   },
   subtitle: {
     fontSize: 13,

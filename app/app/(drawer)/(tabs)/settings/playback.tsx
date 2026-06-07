@@ -144,13 +144,6 @@ const REGION_OPTIONS: PickerOption[] = [
   { label: 'Global', value: 'Global' },
 ];
 
-const QUALITY_OPTIONS: PickerOption[] = [
-  { label: 'Low (~64 kbps)', value: 'low' },
-  { label: 'Normal (~128 kbps)', value: 'normal' },
-  { label: 'High (~192 kbps)', value: 'high' },
-  { label: 'Very High (~320 kbps)', value: 'very_high' },
-];
-
 // ─── Screen ─────────────────────────────────────────────────────────────────
 
 export default function PlaybackSettingsScreen() {
@@ -189,40 +182,6 @@ export default function PlaybackSettingsScreen() {
           value={settings.localChartsLocation}
           options={REGION_OPTIONS}
           onChange={(v) => updateSetting('localChartsLocation', v)}
-          theme={theme}
-        />
-
-        {/* ── Streaming quality ── */}
-        <SectionHeader title="Streaming Quality" theme={theme} />
-
-        <PickerRow
-          title="Streaming Quality"
-          description="Default quality when network type is unknown."
-          value={settings.cellularStreamingQuality}
-          options={QUALITY_OPTIONS}
-          onChange={(v) =>
-            updateSetting('cellularStreamingQuality', v as typeof settings.cellularStreamingQuality)
-          }
-          theme={theme}
-        />
-        <PickerRow
-          title="Streaming Quality on Wi-Fi"
-          description="Higher quality is safe on Wi-Fi."
-          value={settings.wifiStreamingQuality}
-          options={QUALITY_OPTIONS}
-          onChange={(v) =>
-            updateSetting('wifiStreamingQuality', v as typeof settings.wifiStreamingQuality)
-          }
-          theme={theme}
-        />
-        <PickerRow
-          title="YouTube / Proxy Quality"
-          description="Bitrate cap for Piped and proxy streams."
-          value={settings.proxyStreamingQuality}
-          options={QUALITY_OPTIONS}
-          onChange={(v) =>
-            updateSetting('proxyStreamingQuality', v as typeof settings.proxyStreamingQuality)
-          }
           theme={theme}
         />
 
@@ -273,20 +232,6 @@ export default function PlaybackSettingsScreen() {
           description="Continue audio when the screen is off or another app is open."
           value={settings.playInBackground}
           onChange={(v) => updateSetting('playInBackground', v)}
-          theme={theme}
-        />
-        <ToggleRow
-          title="Gapless Playback"
-          description="Remove silence between tracks when supported."
-          value={settings.gaplessPlayback}
-          onChange={(v) => updateSetting('gaplessPlayback', v)}
-          theme={theme}
-        />
-        <ToggleRow
-          title="Normalize Volume"
-          description="Level loudness across tracks."
-          value={settings.normalizeVolume}
-          onChange={(v) => updateSetting('normalizeVolume', v)}
           theme={theme}
         />
         <ToggleRow

@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -14,11 +16,13 @@ import { Ionicons } from '@expo/vector-icons';
 import Animated, {
   Easing,
   interpolate,
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
   withTiming,
 } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -31,9 +35,56 @@ import { getTheme } from '@/src/theme/musicTheme';
 import { DownloadManager } from '@/src/services/downloads/DownloadManager';
 import { LyricsResult, LyricsService } from '@/src/services/lyrics/LyricsService';
 import { HapticsService } from '@/src/services/HapticsService';
+import { SearchService } from '@/src/services/search/SearchService';
+import { RecommendationEngine } from '@/src/services/recommendations/RecommendationEngine';
 
 // ── Playback speed cycle ─────────────────────────────────────────────────────
 const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
+const AMBIENT_FALLBACK = '#0d0820';
+
+// Track credit strings often bundle several names — e.g. "Sublahshini & Krishna Kanth"
+// or "Anirudh Ravichandran, Sublahshini, Krishna Kanth". Split them so each credited
+// artist gets their own "View Artist (Name)" entry in the song-options sheet.
+const ARTIST_SEPARATOR_RE = /\s*(?:,|&|\/|\bx\b| feat\.?| ft\.?| featuring | vs\.?\s| and )\s*/gi;
+
+function splitArtistNames(raw: string): string[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const part of raw.split(ARTIST_SEPARATOR_RE)) {
+    const name = part.trim();
+    if (name && !seen.has(name.toLowerCase())) {
+      seen.add(name.toLowerCase());
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function darkenColor(hex: string, factor = 0.35): string {
+  const c = hex.replace('#', '');
+  if (c.length !== 6) return AMBIENT_FALLBACK;
+  const r = Math.round(parseInt(c.slice(0, 2), 16) * factor);
+  const g = Math.round(parseInt(c.slice(2, 4), 16) * factor);
+  const b = Math.round(parseInt(c.slice(4, 6), 16) * factor);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+async function extractAmbientColor(imageUrl: string): Promise<string> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ImageColors = require('react-native-image-colors').default;
+    const result = await ImageColors.getColors(imageUrl, {
+      fallback: AMBIENT_FALLBACK, cache: true, key: imageUrl,
+    });
+    const raw: string =
+      result?.vibrant ?? result?.dominant ?? result?.primary ?? result?.background ?? AMBIENT_FALLBACK;
+    return darkenColor(raw, 0.35);
+  } catch {
+    return AMBIENT_FALLBACK;
+  }
+}
 
 // ── Sleep timer options ──────────────────────────────────────────────────────
 const SLEEP_OPTIONS: Array<{ label: string; timer: SleepTimer }> = [
@@ -47,9 +98,9 @@ const SLEEP_OPTIONS: Array<{ label: string; timer: SleepTimer }> = [
 export default function PlayerModal() {
   const {
     queue, currentIndex, isPlaying, playbackPosition, duration, isBuffering,
-    playbackResolverState, playbackStatusMessage, playbackSourceLabel, sleepTimer,
+    playbackResolverState, playbackStatusMessage, playbackSourceLabel, playbackDiagnostics, sleepTimer,
     setIsPlaying, nextTrack, previousTrack, playTrack, requestSeek,
-    removeFromQueue, setSleepTimer, setPipMode,
+    removeFromQueue, setSleepTimer, setQueue, playbackRate, setPlaybackRate,
   } = usePlayerStore();
   const { isLiked, toggleLikeTrack } = useLibraryStore();
   const { settings, updateSetting } = useSettingsStore();
@@ -65,8 +116,17 @@ export default function PlayerModal() {
   const [lyrics, setLyrics]             = useState<LyricsResult | null>(null);
   const [activeLyricIdx, setActiveLyricIdx] = useState(-1);
   const [showMenu, setShowMenu]         = useState(false);
+  const [showTrackActions, setShowTrackActions] = useState(false);
   const [showSleepPicker, setShowSleepPicker] = useState(false);
-  const [speedIdx, setSpeedIdx]         = useState(SPEEDS.indexOf(1.0));
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [speedIdx, setSpeedIdx]         = useState(() => {
+    const i = SPEEDS.indexOf(playbackRate);
+    return i >= 0 ? i : SPEEDS.indexOf(1.0);
+  });
+  const [bgColorA, setBgColorA]         = useState(AMBIENT_FALLBACK);
+  const [bgColorB, setBgColorB]         = useState(AMBIENT_FALLBACK);
+  const ambientFade                     = useSharedValue(0);
 
   const lyricsListRef = useRef<FlatList>(null);
 
@@ -82,6 +142,27 @@ export default function PlayerModal() {
     opacity: interpolate(flipAngle.value, [0, 89, 91, 180], [0, 0, 1, 1]),
     transform: [{ perspective: 1400 }, { rotateY: `${flipAngle.value - 180}deg` }],
   }));
+
+  const ambientStyleB = useAnimatedStyle(() => ({ opacity: ambientFade.value }));
+
+  // Extract album-art color and cross-fade to new gradient on track change
+  useEffect(() => {
+    const art = currentTrack?.artwork || currentTrack?.artworkUrl;
+    if (!art) return;
+    let cancelled = false;
+    extractAmbientColor(art).then((color) => {
+      if (cancelled) return;
+      setBgColorB(color);
+      ambientFade.value = 0;
+      ambientFade.value = withTiming(1, { duration: 1200 }, (finished) => {
+        if (finished) {
+          runOnJS(setBgColorA)(color);
+          ambientFade.value = 0;
+        }
+      });
+    });
+    return () => { cancelled = true; };
+  }, [currentTrack?.id]);
 
   const handleToggleLyrics = useCallback(() => {
     const next = !showLyrics;
@@ -110,6 +191,15 @@ export default function PlayerModal() {
     transform: [{ translateX: marqueeX.value }],
   }));
 
+  // ── Slider reset ─────────────────────────────────────────────────────────
+  // Snap straight to 0 the instant the active track ID changes — covers manual
+  // next/previous, autoplay, and queue taps alike — instead of waiting for
+  // (possibly stale) playbackPosition to catch up.
+  useEffect(() => {
+    setSliderValue(0);
+    setIsSliding(false);
+  }, [currentTrack?.id]);
+
   // ── Slider sync ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isSliding) setSliderValue(playbackPosition);
@@ -137,7 +227,9 @@ export default function PlayerModal() {
     }
   }, [currentTrack?.id]);
 
-  const artworkSize = useMemo(() => width - 32, [width]);
+  // Fixed medium square — never scales to full screen width, so the disk art
+  // never stretches or dominates smaller layouts (cover-fit is applied inside AnimatedDiskArt).
+  const artworkSize = useMemo(() => Math.min(width - 120, 280), [width]);
 
   if (!currentTrack) {
     return (
@@ -157,6 +249,7 @@ export default function PlayerModal() {
     currentTrack.sourceLabel ||
     (currentTrack.sourceType === 'proxy' ? 'Proxy'
       : currentTrack.sourceType === 'piped' ? 'Piped' : 'Legal');
+  const isPreviewOnly = playbackDiagnostics?.streamType === 'preview_only';
 
   const fmt = (s: number) => {
     const v = Math.max(0, Math.floor(s || 0));
@@ -174,8 +267,9 @@ export default function PlayerModal() {
   const cycleSpeed = () => {
     const next = (speedIdx + 1) % SPEEDS.length;
     setSpeedIdx(next);
-    // expo-audio 1.1.x: AudioPlayer.playbackRate is settable
-    // Applied via native player ref — silently ignored if unavailable
+    // Routed through the store so UnifiedPlayer can apply it to the actual native
+    // AudioPlayer (which lives there, not in this modal).
+    setPlaybackRate(SPEEDS[next]);
   };
 
   const handleSleepSelect = (opt: typeof SLEEP_OPTIONS[0]) => {
@@ -186,18 +280,88 @@ export default function PlayerModal() {
     setShowSleepPicker(false);
   };
 
-  const handleMinimize = () => {
-    setPipMode(true);
-    router.back();
+  // ── Song title / artist actions ──────────────────────────────────────────
+  const trackArtist = currentTrack.artist || currentTrack.artistName || '';
+  const trackAlbum = currentTrack.album || currentTrack.albumName || '';
+
+  const handleViewAlbum = async () => {
+    setShowTrackActions(false);
+    if (!trackAlbum) return;
+    const results = await SearchService.searchAll(`${trackAlbum} ${trackArtist}`).catch(() => []);
+    if (results.length > 0) setQueue(results, 0);
   };
+
+  const handleViewArtist = async (name?: string) => {
+    setShowTrackActions(false);
+    const target = name || trackArtist;
+    if (!target) return;
+    const results = await SearchService.searchAll(`${target} best songs`).catch(() => []);
+    if (results.length > 0) setQueue(results, 0);
+  };
+
+  const handleStartRadio = async () => {
+    setShowTrackActions(false);
+    const radio = await RecommendationEngine.getRadioQueue(currentTrack, 20).catch(() => []);
+    if (radio.length > 0) setQueue([currentTrack, ...radio], 0);
+  };
+
+  const handleAddToPlaylist = () => {
+    setShowTrackActions(false);
+    Alert.alert('Coming soon', 'Adding songs to playlists will be available in a future update.');
+  };
+
+  const handleShare = () => {
+    setShowTrackActions(false);
+    const message = trackArtist ? `${currentTrack.title} — ${trackArtist}` : currentTrack.title;
+    Share.share({ message }).catch(() => undefined);
+  };
+
+  // One "View Artist (Name)" entry per credited artist when the track lists several
+  // (e.g. singer + composer + featured artist) — falls back to a single generic
+  // "View Artist" entry when there's just one name or none at all.
+  const artistNames = splitArtistNames(trackArtist);
+  const artistActions = artistNames.length > 1
+    ? artistNames.map((name) => ({
+        icon: 'person-outline' as const,
+        label: `View Artist (${name})`,
+        onPress: () => handleViewArtist(name),
+        disabled: false,
+      }))
+    : [{ icon: 'person-outline' as const, label: 'View Artist', onPress: () => handleViewArtist(), disabled: !trackArtist }];
+
+  const TRACK_ACTIONS = [
+    { icon: 'disc-outline' as const, label: 'View Album', onPress: handleViewAlbum, disabled: !trackAlbum },
+    ...artistActions,
+    { icon: 'radio-outline' as const, label: 'Start Radio', onPress: handleStartRadio, disabled: false },
+    { icon: 'list-outline' as const, label: 'Add to Playlist', onPress: handleAddToPlaylist, disabled: false },
+    { icon: 'share-social-outline' as const, label: 'Share', onPress: handleShare, disabled: false },
+  ];
 
   const upcoming = queue.slice(currentIndex + 1);
 
   return (
     <View style={styles.root}>
+      {/* Ambient gradient — layer A (base) */}
+      <LinearGradient
+        colors={[bgColorA, '#000']}
+        style={StyleSheet.absoluteFill}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 0.55 }}
+        pointerEvents="none"
+      />
+      {/* Ambient gradient — layer B (fades in over A on track change) */}
+      <Animated.View style={[StyleSheet.absoluteFill, ambientStyleB]} pointerEvents="none">
+        <LinearGradient
+          colors={[bgColorB, '#000']}
+          style={StyleSheet.absoluteFill}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 0.55 }}
+        />
+      </Animated.View>
+
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 40 }]}
       >
         {/* ── Header ──────────────────────────────────────────────────── */}
         <View style={[styles.header, { paddingTop: insets.top + 14 }]}>
@@ -216,9 +380,6 @@ export default function PlayerModal() {
                 size={22}
                 color={showLyrics ? '#fff' : 'rgba(255,255,255,0.55)'}
               />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.iconBtn} onPress={handleMinimize}>
-              <Ionicons name="share-outline" size={22} color="rgba(255,255,255,0.55)" />
             </TouchableOpacity>
             <TouchableOpacity style={styles.iconBtn} onPress={() => setShowMenu(true)}>
               <Ionicons name="ellipsis-vertical" size={22} color="rgba(255,255,255,0.55)" />
@@ -255,16 +416,31 @@ export default function PlayerModal() {
                 showsVerticalScrollIndicator={false}
                 style={{ flex: 1, width: '100%' }}
                 onScrollToIndexFailed={() => undefined}
-                renderItem={({ item, index }) => (
-                  <Text
-                    style={[
-                      styles.lyricLine,
-                      index === activeLyricIdx && styles.lyricLineActive,
-                    ]}
-                  >
-                    {item.text}
-                  </Text>
-                )}
+                renderItem={({ item, index }) => {
+                  const dist = Math.abs(index - activeLyricIdx);
+                  const opacity = index === activeLyricIdx ? 1
+                    : dist === 1 ? 0.6
+                    : dist === 2 ? 0.38
+                    : 0.2;
+                  const scale = index === activeLyricIdx ? 1.08 : 1;
+                  return (
+                    <TouchableOpacity
+                      activeOpacity={0.65}
+                      onPress={() => requestSeek(item.timeSeconds)}
+                      style={{ transform: [{ scale }] }}
+                    >
+                      <Text
+                        style={[
+                          styles.lyricLine,
+                          { opacity },
+                          index === activeLyricIdx && styles.lyricLineActive,
+                        ]}
+                      >
+                        {item.text}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
               />
             ) : (
               <ScrollView style={{ flex: 1 }}>
@@ -274,8 +450,14 @@ export default function PlayerModal() {
           </Animated.View>
         </View>
 
-        {/* ── Track info ────────────────────────────────────────────── */}
-        <View style={styles.infoBlock}>
+        {/* ── Track info — tap for album/artist/radio/share actions ─── */}
+        <TouchableOpacity
+          style={styles.infoBlock}
+          activeOpacity={0.7}
+          onPress={() => setShowTrackActions(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Song options"
+        >
           {/* Scrolling title */}
           <View style={styles.titleClip}>
             <Animated.Text style={[styles.title, marqueeStyle]} numberOfLines={1}>
@@ -283,9 +465,9 @@ export default function PlayerModal() {
             </Animated.Text>
           </View>
           <Text style={styles.artist} numberOfLines={1}>
-            {currentTrack.artist || currentTrack.artistName}
+            {trackArtist}
           </Text>
-        </View>
+        </TouchableOpacity>
 
         {/* ── Speed + Progress ─────────────────────────────────────── */}
         <View style={styles.progressBlock}>
@@ -359,55 +541,122 @@ export default function PlayerModal() {
             />
           </TouchableOpacity>
 
-          {/* Source indicator — subtle, right side */}
-          <View style={styles.sourceChip}>
+          {/* Source indicator — tap to reveal temporary playback diagnostics */}
+          <TouchableOpacity
+            style={styles.sourceChip}
+            activeOpacity={0.7}
+            onPress={() => setShowDiagnostics((v) => !v)}
+            accessibilityRole="button"
+            accessibilityLabel="Playback source diagnostics"
+          >
             {(isBuffering || playbackResolverState === 'retrying') ? (
               <ActivityIndicator size="small" color="rgba(255,255,255,0.5)" />
             ) : (
               <Ionicons
-                name={playbackResolverState === 'failed' ? 'alert-circle-outline' : 'radio-outline'}
+                name={playbackResolverState === 'failed' ? 'alert-circle-outline' : isPreviewOnly ? 'time-outline' : 'radio-outline'}
                 size={14}
-                color="rgba(255,255,255,0.4)"
+                color={isPreviewOnly ? '#FFB020' : 'rgba(255,255,255,0.4)'}
               />
             )}
-            <Text style={styles.sourceText} numberOfLines={1}>
+            <Text style={[styles.sourceText, isPreviewOnly && styles.sourceTextWarning]} numberOfLines={1}>
               {playbackStatusMessage || sourceBadge}
             </Text>
+            <Ionicons
+              name={showDiagnostics ? 'chevron-up' : 'chevron-down'}
+              size={12}
+              color="rgba(255,255,255,0.3)"
+            />
+          </TouchableOpacity>
+        </View>
+
+        {/* ── Playback diagnostics — temporary debug surface ───────── */}
+        {showDiagnostics && (
+          <View style={styles.diagnosticsPanel}>
+            {isPreviewOnly && (
+              <Text style={[styles.diagnosticsRow, styles.diagnosticsWarning]}>
+                ⚠ Playing a 30-second preview — no full stream was available from any source.
+              </Text>
+            )}
+            <Text style={styles.diagnosticsRow}>
+              <Text style={styles.diagnosticsLabel}>Source: </Text>
+              {playbackDiagnostics?.resolverName ?? '—'}
+            </Text>
+            <Text style={styles.diagnosticsRow}>
+              <Text style={styles.diagnosticsLabel}>Type: </Text>
+              {playbackDiagnostics?.streamType ?? '—'}
+            </Text>
+            <Text style={styles.diagnosticsRow}>
+              <Text style={styles.diagnosticsLabel}>Domain: </Text>
+              {playbackDiagnostics?.urlDomain ?? '—'}
+            </Text>
+            {playbackDiagnostics?.failureReason && (
+              <Text style={[styles.diagnosticsRow, styles.diagnosticsWarning]}>
+                <Text style={styles.diagnosticsLabel}>Failure: </Text>
+                {playbackDiagnostics.failureReason}
+              </Text>
+            )}
+            {!!playbackDiagnostics?.attemptedSources.length && (
+              <Text style={styles.diagnosticsRow}>
+                <Text style={styles.diagnosticsLabel}>Tried: </Text>
+                {playbackDiagnostics.attemptedSources.join('  →  ')}
+              </Text>
+            )}
           </View>
-        </View>
+        )}
 
-        {/* ── Up Next drag handle ──────────────────────────────────── */}
-        <View style={styles.upNextHandle}>
+        {/* ── Up Next — collapsible disclosure, never a half-visible sliver ─ */}
+        <TouchableOpacity
+          style={styles.upNextHandle}
+          activeOpacity={0.7}
+          onPress={() => setShowQueue((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={showQueue ? 'Hide queue' : 'Show queue'}
+        >
           <View style={styles.pill} />
-          <Text style={styles.upNextLabel}>Up Next</Text>
-        </View>
+          <View style={styles.upNextRow}>
+            <Text style={styles.upNextLabel}>Up Next</Text>
+            {upcoming.length > 0 && (
+              <View style={styles.upNextCount}>
+                <Text style={styles.upNextCountText}>{upcoming.length}</Text>
+              </View>
+            )}
+            <Ionicons
+              name={showQueue ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color="rgba(255,255,255,0.4)"
+            />
+          </View>
+        </TouchableOpacity>
 
-        {/* ── Queue ────────────────────────────────────────────────── */}
-        <View style={styles.queueSection}>
-          {upcoming.length > 0 ? (
-            upcoming.map((track, index) => {
-              const absIdx = currentIndex + 1 + index;
-              return (
-                <View key={`${track.id}-${absIdx}`} style={styles.queueRow}>
-                  <View style={styles.queueItem}>
-                    {track.queueReason && (
-                      <Text style={styles.queueReason}>{track.queueReason}</Text>
-                    )}
-                    <TrackItem track={track} onPress={() => playTrack(absIdx)} />
+        {/* ── Queue — only mounted while expanded, so it's always either fully
+             visible or fully hidden, never an accidental partial peek ──── */}
+        {showQueue && (
+          <View style={styles.queueSection}>
+            {upcoming.length > 0 ? (
+              upcoming.map((track, index) => {
+                const absIdx = currentIndex + 1 + index;
+                return (
+                  <View key={`${track.id}-${absIdx}`} style={styles.queueRow}>
+                    <View style={styles.queueItem}>
+                      {track.queueReason && (
+                        <Text style={styles.queueReason}>{track.queueReason}</Text>
+                      )}
+                      <TrackItem track={track} onPress={() => playTrack(absIdx)} />
+                    </View>
+                    <TouchableOpacity style={styles.removeBtn} onPress={() => removeFromQueue(absIdx)}>
+                      <Ionicons name="close" size={18} color="rgba(255,255,255,0.4)" />
+                    </TouchableOpacity>
                   </View>
-                  <TouchableOpacity style={styles.removeBtn} onPress={() => removeFromQueue(absIdx)}>
-                    <Ionicons name="close" size={18} color="rgba(255,255,255,0.4)" />
-                  </TouchableOpacity>
-                </View>
-              );
-            })
-          ) : (
-            <View style={styles.emptyQueue}>
-              <Ionicons name="sparkles-outline" size={22} color="rgba(255,255,255,0.3)" />
-              <Text style={styles.emptyQueueText}>Queue is clear — autoplay will fill it</Text>
-            </View>
-          )}
-        </View>
+                );
+              })
+            ) : (
+              <View style={styles.emptyQueue}>
+                <Ionicons name="sparkles-outline" size={22} color="rgba(255,255,255,0.3)" />
+                <Text style={styles.emptyQueueText}>Queue is clear — autoplay will fill it</Text>
+              </View>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {/* ── Three-dot menu ──────────────────────────────────────── */}
@@ -415,12 +664,11 @@ export default function PlayerModal() {
         <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setShowMenu(false)}>
           <View style={styles.menuSheet}>
             {[
-              { icon: 'disc-outline', label: 'View Album', onPress: () => setShowMenu(false) },
-              { icon: 'list-outline', label: 'Add to Playlist', onPress: () => setShowMenu(false) },
               {
                 icon: 'moon-outline',
                 label: sleepTimer ? `Sleep: ${sleepTimer.label}` : 'Sleep Timer',
                 onPress: () => { setShowMenu(false); sleepTimer ? setSleepTimer(null) : setShowSleepPicker(true); },
+                disabled: false,
               },
               {
                 icon: 'logo-youtube',
@@ -432,11 +680,36 @@ export default function PlayerModal() {
                     Linking.openURL(`https://www.youtube.com/watch?v=${vid}`)
                   );
                 },
+                disabled: !currentTrack.pipedVideoId,
               },
             ].map((item) => (
-              <TouchableOpacity key={item.label} style={styles.menuItem} onPress={item.onPress}>
-                <Ionicons name={item.icon as any} size={20} color="#fff" />
-                <Text style={styles.menuLabel}>{item.label}</Text>
+              <TouchableOpacity
+                key={item.label}
+                style={styles.menuItem}
+                onPress={item.onPress}
+                disabled={item.disabled}
+              >
+                <Ionicons name={item.icon as any} size={20} color={item.disabled ? 'rgba(255,255,255,0.25)' : '#fff'} />
+                <Text style={[styles.menuLabel, item.disabled && styles.menuLabelDisabled]}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Song title tap → album / artist / radio / playlist / share ──── */}
+      <Modal transparent animationType="fade" visible={showTrackActions} onRequestClose={() => setShowTrackActions(false)}>
+        <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setShowTrackActions(false)}>
+          <View style={styles.menuSheet}>
+            {TRACK_ACTIONS.map((item) => (
+              <TouchableOpacity
+                key={item.label}
+                style={styles.menuItem}
+                onPress={item.onPress}
+                disabled={item.disabled}
+              >
+                <Ionicons name={item.icon as any} size={20} color={item.disabled ? 'rgba(255,255,255,0.25)' : '#fff'} />
+                <Text style={[styles.menuLabel, item.disabled && styles.menuLabelDisabled]}>{item.label}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -461,8 +734,8 @@ export default function PlayerModal() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#000' },
-  scrollContent: { flexGrow: 1, paddingBottom: 40 },
+  root: { flex: 1, backgroundColor: '#000000' },
+  scrollContent: { flexGrow: 1 },
 
   // Header
   header: {
@@ -539,11 +812,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
     marginBottom: 24,
   },
-  sourceChip: { alignItems: 'center', flexDirection: 'row', gap: 5, maxWidth: 200 },
+  sourceChip: { alignItems: 'center', flexDirection: 'row', gap: 5, maxWidth: 220 },
   sourceText: { color: 'rgba(255,255,255,0.4)', fontSize: 11, fontWeight: '700', flexShrink: 1 },
+  sourceTextWarning: { color: '#FFB020' },
+
+  // Playback diagnostics (temporary debug surface — toggled from the source chip)
+  diagnosticsPanel: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 12,
+    gap: 4,
+    marginHorizontal: 28,
+    marginTop: -12,
+    marginBottom: 20,
+    padding: 14,
+  },
+  diagnosticsRow: { color: 'rgba(255,255,255,0.55)', fontSize: 12, lineHeight: 18 },
+  diagnosticsLabel: { color: 'rgba(255,255,255,0.35)', fontWeight: '800' },
+  diagnosticsWarning: { color: '#FFB020', fontWeight: '700' },
 
   // Up Next handle
-  upNextHandle: { alignItems: 'center', paddingBottom: 10 },
+  upNextHandle: { alignItems: 'center', paddingBottom: 10, paddingTop: 4 },
   pill: {
     backgroundColor: 'rgba(255,255,255,0.2)',
     borderRadius: 3,
@@ -551,7 +839,16 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     width: 40,
   },
+  upNextRow: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   upNextLabel: { color: '#fff', fontSize: 17, fontWeight: '900' },
+  upNextCount: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 10,
+    minWidth: 22,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  upNextCountText: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '800', textAlign: 'center' },
 
   // Queue
   queueSection: { paddingBottom: 16 },
@@ -595,6 +892,7 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
   },
   menuLabel: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  menuLabelDisabled: { color: 'rgba(255,255,255,0.3)' },
 
   // Empty screen
   emptyScreen: { alignItems: 'center', flex: 1, justifyContent: 'center', padding: 24 },

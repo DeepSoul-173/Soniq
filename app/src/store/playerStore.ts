@@ -2,9 +2,19 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { Track } from '@/src/models/types';
 import { mmkvZustandStorage } from '@/src/store/mmkvStorage';
-import { PlaybackResolverState } from '@/src/services/playback/SourceResolver';
+import { PlaybackResolverState, StreamType } from '@/src/services/playback/SourceResolver';
 
 export type SleepTimerMode = 'end_of_track' | 'timed';
+
+/** Temporary on-screen diagnostics — surfaces *why* a source was chosen or rejected. */
+export interface PlaybackDiagnostics {
+  resolverName: string | null;
+  sourceLabel: string | null;
+  streamType: StreamType | null;
+  urlDomain: string | null;
+  failureReason: string | null;
+  attemptedSources: string[];
+}
 
 export interface SleepTimer {
   mode: SleepTimerMode;
@@ -19,13 +29,14 @@ interface PlayerStore {
   isBuffering: boolean;
   playbackPosition: number;
   duration: number;
+  playbackRate: number;
   activeEngine: 'native' | null;
   seekRequest: { position: number; requestId: number } | null;
   playbackResolverState: PlaybackResolverState | 'idle';
   playbackStatusMessage: string;
   playbackSourceLabel: 'Legal' | 'Piped' | 'Proxy' | 'Downloaded' | null;
+  playbackDiagnostics: PlaybackDiagnostics | null;
   sleepTimer: SleepTimer | null;
-  isPipMode: boolean;
 
   // Actions
   setQueue: (tracks: Track[], startIndex?: number) => void;
@@ -41,6 +52,7 @@ interface PlayerStore {
   
   setIsPlaying: (isPlaying: boolean) => void;
   setPlaybackState: (position: number, duration: number) => void;
+  setPlaybackRate: (rate: number) => void;
   requestSeek: (position: number) => void;
   setIsBuffering: (isBuffering: boolean) => void;
   setActiveEngine: (engine: 'native' | null) => void;
@@ -49,8 +61,8 @@ interface PlayerStore {
     message?: string,
     sourceLabel?: PlayerStore['playbackSourceLabel']
   ) => void;
+  setPlaybackDiagnostics: (diagnostics: PlaybackDiagnostics | null) => void;
   setSleepTimer: (timer: SleepTimer | null) => void;
-  setPipMode: (pip: boolean) => void;
 }
 
 export const usePlayerStore = create<PlayerStore>()(
@@ -62,13 +74,14 @@ export const usePlayerStore = create<PlayerStore>()(
       isBuffering: false,
       playbackPosition: 0,
       duration: 0,
+      playbackRate: 1,
       activeEngine: null,
       seekRequest: null,
       playbackResolverState: 'idle',
       playbackStatusMessage: '',
       playbackSourceLabel: null,
+      playbackDiagnostics: null,
       sleepTimer: null,
-      isPipMode: false,
 
       setQueue: (tracks, startIndex = 0) => {
         const currentIndex = tracks.length ? Math.max(0, Math.min(startIndex, tracks.length - 1)) : -1;
@@ -164,10 +177,12 @@ export const usePlayerStore = create<PlayerStore>()(
 
       setIsPlaying: (isPlaying) => set({ isPlaying }),
       
-      setPlaybackState: (position, duration) => set({ 
-        playbackPosition: position, 
-        duration: duration 
+      setPlaybackState: (position, duration) => set({
+        playbackPosition: position,
+        duration: duration
       }),
+
+      setPlaybackRate: (playbackRate) => set({ playbackRate }),
 
       requestSeek: (position) => set((state) => ({
         seekRequest: {
@@ -188,8 +203,9 @@ export const usePlayerStore = create<PlayerStore>()(
           playbackSourceLabel: playbackSourceLabel === undefined ? state.playbackSourceLabel : playbackSourceLabel,
         })),
 
+      setPlaybackDiagnostics: (playbackDiagnostics) => set({ playbackDiagnostics }),
+
       setSleepTimer: (sleepTimer) => set({ sleepTimer }),
-      setPipMode: (isPipMode) => set({ isPipMode }),
     }),
     {
       name: 'soniq-player-storage',

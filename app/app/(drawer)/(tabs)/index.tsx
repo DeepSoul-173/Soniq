@@ -17,13 +17,14 @@ import { useNavigation, useRouter } from 'expo-router';
 import { useSettingsStore } from '@/src/store/settingsStore';
 import { usePlayerStore } from '@/src/store/playerStore';
 import { Track } from '@/src/models/types';
-import { getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { FONTS, getPlayerDockHeight, getTheme } from '@/src/theme/musicTheme';
+import { hasCustomBackground, screenBackground } from '@/src/theme/backgrounds';
 import {
-  AlbumRecommendation,
   ArtistRecommendation,
   HomeRecommendationSection,
   RecommendationEngine,
 } from '@/src/services/recommendations/RecommendationEngine';
+import { SearchService } from '@/src/services/search/SearchService';
 import { useResponsiveLayout } from '@/src/hooks/useResponsiveLayout';
 
 const safeJoin = (values: unknown, separator = ', ') =>
@@ -41,24 +42,41 @@ export default function HomeScreen() {
   const { railCardWidth } = useResponsiveLayout();
   const [sections, setSections] = useState<HomeRecommendationSection[]>([]);
   const [loading, setLoading] = useState(false);
+  const [searchingArtistId, setSearchingArtistId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
 
-    RecommendationEngine.getHomeRecommendations()
-      .then((nextSections) => {
-        if (!cancelled) setSections(nextSections);
-      })
-      .catch((error) => console.error('Home recommendations failed', error))
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    const load = () => {
+      setLoading(true);
+      RecommendationEngine.getHomeRecommendations()
+        .then(({ sections: tier1, loadMore }) => {
+          if (cancelled) return;
+          setSections(tier1);
+          setLoading(false); // Tier 1 rendered — spinner off immediately
+          loadMore()
+            .then((tier2) => {
+              if (!cancelled && tier2.length > 0) {
+                setSections((prev) => [...prev, ...tier2]);
+              }
+            })
+            .catch(() => {}); // Tier 2 failures are silent
+        })
+        .catch((err) => {
+          console.error('Home recommendations failed', err);
+          if (!cancelled) setLoading(false);
+        });
+    };
+
+    load();
+    // Refresh taste-based sections every 30 minutes while screen is mounted
+    const interval = setInterval(load, 30 * 60 * 1000);
 
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
-  }, [settings.musicLanguage, settings.localChartsLocation, settings.preferredListeningMoods, settings.favoriteGenres, settings.favoriteArtists, settings.preferredLanguages]);
+  }, [settings.musicLanguage, settings.preferredLanguages]);
 
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
@@ -91,22 +109,46 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
-  const renderArtistCard = (artist: ArtistRecommendation) => (
-    <TouchableOpacity
-      key={artist.id}
-      style={[styles.artistCard, { width: railCardWidth, backgroundColor: theme.surface, borderColor: theme.border }]}
-    >
-      <Image source={{ uri: artist.image || 'https://via.placeholder.com/180' }} style={styles.artistArt} />
-      <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1} ellipsizeMode="tail">
-        {artist.name}
-      </Text>
-      <Text style={[styles.cardSubtitle, { color: theme.secondaryText }]} numberOfLines={2} ellipsizeMode="tail">
-        {artist.reason}
-      </Text>
-    </TouchableOpacity>
-  );
+  const handleArtistPress = async (artist: ArtistRecommendation) => {
+    if (searchingArtistId) return;
+    setSearchingArtistId(artist.id);
+    try {
+      const query = artist.searchQuery ?? `${artist.name} best songs`;
+      const results = await SearchService.searchAll(query);
+      if (results.length > 0) setQueue(results, 0);
+    } catch { /* ignore */ }
+    setSearchingArtistId(null);
+  };
 
-  const renderAlbumCard = (album: AlbumRecommendation) => (
+  const renderArtistCard = (artist: ArtistRecommendation) => {
+    const isSearching = searchingArtistId === artist.id;
+    const initials = artist.name.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+    return (
+      <TouchableOpacity
+        key={artist.id}
+        style={[styles.artistCard, { width: railCardWidth, backgroundColor: theme.surface, borderColor: theme.border }]}
+        onPress={() => handleArtistPress(artist)}
+        activeOpacity={0.75}
+      >
+        <View style={[styles.artistAvatarWrap, { backgroundColor: theme.elevated }]}>
+          {isSearching
+            ? <ActivityIndicator color={theme.accent} />
+            : artist.image
+              ? <Image source={{ uri: artist.image }} style={StyleSheet.absoluteFill as any} />
+              : <Text style={[styles.artistInitials, { color: theme.accent }]}>{initials}</Text>
+          }
+        </View>
+        <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1} ellipsizeMode="tail">
+          {artist.name}
+        </Text>
+        <Text style={[styles.cardSubtitle, { color: theme.secondaryText }]} numberOfLines={1} ellipsizeMode="tail">
+          {artist.reason}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderAlbumCard = (album: NonNullable<HomeRecommendationSection['albums']>[number]) => (
     <TouchableOpacity
       key={album.id}
       style={[styles.albumCard, { width: railCardWidth, backgroundColor: theme.surface, borderColor: theme.border }]}
@@ -152,8 +194,11 @@ export default function HomeScreen() {
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <LinearGradient colors={theme.gradient} style={StyleSheet.absoluteFill} />
+    <View style={[styles.container, { backgroundColor: screenBackground(settings, theme.background) }]}>
+      {/* Skip the home's own gradient when a custom app background is active. */}
+      {!hasCustomBackground(settings) && (
+        <LinearGradient colors={theme.gradient} style={StyleSheet.absoluteFill} />
+      )}
 
       <SafeAreaView edges={['top']} style={[styles.stickyHeader, { backgroundColor: theme.overlay, borderBottomColor: theme.border }]}>
         <View style={styles.headerTop}>
@@ -228,7 +273,7 @@ const styles = StyleSheet.create({
   },
   roundButton: { alignItems: 'center', height: 42, justifyContent: 'center', width: 42 },
   greetingCopy: { flex: 1, paddingHorizontal: 12 },
-  greeting: { fontSize: 25, fontWeight: '900' },
+  greeting: { fontSize: 27, fontWeight: '700', fontFamily: FONTS.serif },
   subGreeting: { fontSize: 12, fontWeight: '600', marginTop: 2 },
   avatar: { borderRadius: 20, height: 40, width: 40 },
   editDot: {
@@ -291,8 +336,15 @@ const styles = StyleSheet.create({
     marginRight: 10,
     padding: 12,
   },
-  // Artist photo: 60% of card width (set inline for responsiveness)
-  artistArt: { aspectRatio: 1, backgroundColor: '#333', borderRadius: 999, width: '60%' },
+  artistAvatarWrap: {
+    alignItems: 'center',
+    aspectRatio: 1,
+    borderRadius: 999,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    width: '60%',
+  },
+  artistInitials: { fontSize: 22, fontWeight: '900' },
   cardTitle: { fontSize: 14, fontWeight: '900', marginTop: 10 },
   cardSubtitle: { fontSize: 12, fontWeight: '600', lineHeight: 16, marginTop: 3 },
   cardIcon: { alignSelf: 'flex-end', marginTop: 8 },

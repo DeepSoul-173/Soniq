@@ -123,13 +123,6 @@ function PickerRow({
 
 // ─── Options ────────────────────────────────────────────────────────────────
 
-const QUALITY_OPTIONS: PickerOption[] = [
-  { label: 'Low (~64 kbps)', value: 'low' },
-  { label: 'Normal (~128 kbps)', value: 'normal' },
-  { label: 'High (~192 kbps)', value: 'high' },
-  { label: 'Very High (~320 kbps)', value: 'very_high' },
-];
-
 const DOWNLOAD_QUALITY_OPTIONS: PickerOption[] = [
   { label: 'Normal (~128 kbps)', value: 'normal' },
   { label: 'High (~192 kbps)', value: 'high' },
@@ -157,53 +150,8 @@ export default function AudioQualitySettingsScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.content, { paddingBottom: getPlayerDockHeight(insets.bottom) }]}
       >
-        {/* ── Streaming ── */}
-        <SectionHeader title="Streaming" theme={theme} />
-
-        <PickerRow
-          title="Streaming Quality"
-          description="Default quality on an unknown or cellular connection."
-          value={settings.cellularStreamingQuality}
-          options={QUALITY_OPTIONS}
-          onChange={(v) =>
-            updateSetting('cellularStreamingQuality', v as typeof settings.cellularStreamingQuality)
-          }
-          theme={theme}
-        />
-        <PickerRow
-          title="Streaming Quality on Wi-Fi"
-          description="Quality used when connected to Wi-Fi."
-          value={settings.wifiStreamingQuality}
-          options={QUALITY_OPTIONS}
-          onChange={(v) =>
-            updateSetting('wifiStreamingQuality', v as typeof settings.wifiStreamingQuality)
-          }
-          theme={theme}
-        />
-        <PickerRow
-          title="YouTube / Proxy Quality"
-          description="Bitrate cap applied to Piped and proxy streams."
-          value={settings.proxyStreamingQuality}
-          options={QUALITY_OPTIONS}
-          onChange={(v) =>
-            updateSetting('proxyStreamingQuality', v as typeof settings.proxyStreamingQuality)
-          }
-          theme={theme}
-        />
-        <ToggleRow
-          title="Auto-Adjust Quality"
-          description="Let the app lower quality when the connection is weak."
-          value={settings.autoAdjustQuality}
-          onChange={(v) => updateSetting('autoAdjustQuality', v)}
-          theme={theme}
-        />
-        <ToggleRow
-          title="High Quality on Wi-Fi Only"
-          description="Restrict Very High quality to Wi-Fi connections."
-          value={settings.highQualityOnlyOnWifi}
-          onChange={(v) => updateSetting('highQualityOnlyOnWifi', v)}
-          theme={theme}
-        />
+        {/* Streaming quality tiers were removed — YouTube serves a single adaptive
+            audio stream, so per-network bitrate tiers had no real effect. */}
 
         {/* ── Downloads ── */}
         <SectionHeader title="Downloads" theme={theme} />

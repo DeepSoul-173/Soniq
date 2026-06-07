@@ -61,6 +61,16 @@ function getDb(): Promise<DB | null> {
 
         CREATE INDEX IF NOT EXISTS idx_history_played_at ON play_history (played_at DESC);
         CREATE INDEX IF NOT EXISTS idx_tracks_liked      ON tracks (liked, last_played_at DESC);
+
+        CREATE TABLE IF NOT EXISTS listening_history (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          track_id    TEXT    NOT NULL,
+          title       TEXT    NOT NULL DEFAULT '',
+          artist      TEXT    NOT NULL DEFAULT '',
+          timestamp   INTEGER NOT NULL,
+          duration_s  INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_lh_timestamp ON listening_history (timestamp DESC);
       `);
 
       return db;
@@ -163,6 +173,73 @@ export async function dbGetRecentlyDiscovered(limit = 30): Promise<Track[]> {
     [cutoff, limit]
   );
   return rows.map((r: { data: string }) => JSON.parse(r.data) as Track);
+}
+
+// ── Listening history (duration-aware) ───────────────────────────────────────
+
+export async function dbRecordListeningHistory(track: Track, durationSeconds: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.runAsync(
+    'INSERT INTO listening_history (track_id, title, artist, timestamp, duration_s) VALUES (?, ?, ?, ?, ?)',
+    [
+      track.id,
+      track.title || '',
+      track.artist || track.artistName || '',
+      Date.now(),
+      Math.round(durationSeconds),
+    ]
+  );
+  // Cap at 2000 rows
+  await db.runAsync(
+    `DELETE FROM listening_history WHERE id NOT IN (
+       SELECT id FROM listening_history ORDER BY timestamp DESC LIMIT 2000
+     )`
+  );
+}
+
+export async function dbGetTopArtists(
+  limit = 5
+): Promise<Array<{ artist: string; totalSeconds: number; count: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.getAllAsync(
+    `SELECT artist,
+            SUM(duration_s) AS totalSeconds,
+            COUNT(*)        AS count
+       FROM listening_history
+      WHERE artist != ''
+      GROUP BY artist
+      ORDER BY totalSeconds DESC
+      LIMIT ?`,
+    [limit]
+  );
+}
+
+export async function dbGetTopTracks(
+  limit = 5
+): Promise<Array<{ trackId: string; title: string; artist: string; totalSeconds: number; count: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.getAllAsync(
+    `SELECT track_id AS trackId,
+            title,
+            artist,
+            SUM(duration_s) AS totalSeconds,
+            COUNT(*)        AS count
+       FROM listening_history
+      GROUP BY track_id
+      ORDER BY totalSeconds DESC
+      LIMIT ?`,
+    [limit]
+  );
+}
+
+export async function dbGetTotalListeningTime(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db.getAllAsync('SELECT SUM(duration_s) AS total FROM listening_history');
+  return (rows[0] as { total: number | null })?.total ?? 0;
 }
 
 // ── Playlists ─────────────────────────────────────────────────────────────────

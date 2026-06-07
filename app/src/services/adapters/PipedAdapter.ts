@@ -3,7 +3,10 @@ import { Track, Artist, Album, Playlist } from '@/src/models/types';
 import { normalizeTrack } from '@/src/services/search/trackNormalizer';
 
 const DEFAULT_PIPED_BASE_URL = 'https://pipedapi.kavin.rocks';
-const PIPED_BASE_URLS = [
+
+// Hardcoded fallback instances — always kept at the END of the live list so
+// dynamic instances (fetched by PipedInstanceService) are tried first.
+const HARDCODED_PIPED_INSTANCES: ReadonlyArray<string> = [
   DEFAULT_PIPED_BASE_URL,
   'https://api.piped.private.coffee',
   'https://pipedapi.syncpundit.io',
@@ -13,6 +16,9 @@ const PIPED_BASE_URLS = [
   'https://api.piped.projectsegfau.lt',
   'https://piped-api.garudalinux.org',
 ];
+
+// Mutable at runtime — PipedAdapter.setInstances() prepends fresh dynamic URLs.
+let PIPED_BASE_URLS: string[] = [...HARDCODED_PIPED_INSTANCES];
 
 type PipedSearchItem = {
   duration?: number | string;
@@ -70,11 +76,26 @@ type PipedStreamsResponse = {
 export class PipedAdapter extends BaseAdapter {
   readonly sourceName = 'piped';
 
-  private readonly baseUrls: string[];
+  private readonly primaryBaseUrl: string;
 
   constructor(baseUrl = DEFAULT_PIPED_BASE_URL) {
     super();
-    this.baseUrls = [baseUrl, ...PIPED_BASE_URLS.filter((url) => url !== baseUrl)];
+    this.primaryBaseUrl = baseUrl;
+  }
+
+  /** Always reads from the live module-level array, so setInstances() takes effect immediately. */
+  private get baseUrls(): string[] {
+    if (this.primaryBaseUrl === DEFAULT_PIPED_BASE_URL) return PIPED_BASE_URLS;
+    return [this.primaryBaseUrl, ...PIPED_BASE_URLS.filter((url) => url !== this.primaryBaseUrl)];
+  }
+
+  /**
+   * Overwrites the live instance list with `urls` (dynamic) followed by the
+   * hardcoded fallback instances, so the hardcoded set is always reachable.
+   */
+  static setInstances(urls: string[]): void {
+    const fresh = urls.filter((u) => !(HARDCODED_PIPED_INSTANCES as string[]).includes(u));
+    PIPED_BASE_URLS = [...fresh, ...HARDCODED_PIPED_INSTANCES];
   }
 
   async search(query: string): Promise<{ tracks: Track[]; artists: Artist[]; albums: Album[]; }> {
@@ -311,10 +332,16 @@ export class PipedAdapter extends BaseAdapter {
   }
 
   private async requestJsonFromBase(baseUrl: string, path: string) {
-    const response = await fetch(`${baseUrl}${path}`);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 7000);
+    try {
+      const response = await fetch(`${baseUrl}${path}`, { signal: ctrl.signal });
+      clearTimeout(tid);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } catch (e) {
+      clearTimeout(tid);
+      throw e;
     }
-    return await response.json();
   }
 }
